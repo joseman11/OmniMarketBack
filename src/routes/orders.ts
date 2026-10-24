@@ -15,7 +15,7 @@ import {
 } from "../domain/validation.js";
 import { HttpError } from "../http/errors.js";
 import { parseOrThrow } from "../http/validation.js";
-import { refreshSalesMetrics } from "../services/analytics.js";
+import { affectsSalesMetrics, orderCategoryIds, refreshSalesMetrics } from "../services/analytics.js";
 import { commandHash, findIdempotentReplay, parseIdempotencyKey, saveIdempotentResponse } from "../services/idempotency.js";
 import { isTestWorkspace } from "../domain/workspace.js";
 import { serializeOrder } from "../domain/serializers.js";
@@ -47,6 +47,7 @@ async function resolvePricedItems(
     const product = byId.get(item.productId)!;
     return {
       productId: product.id,
+      categoryId: product.categoryId,
       quantity: item.quantity,
       unitPrice: product.price.toFixed(2),
       unitCost: product.cost.toFixed(2),
@@ -155,7 +156,7 @@ ordersRouter.post("/", async (request, response) => {
       },
       include: orderInclude,
     });
-    await refreshSalesMetrics(tx, order.createdAt, ownerId);
+    await refreshSalesMetrics(tx, order.createdAt, ownerId, pricedItems.map((priced) => priced.categoryId));
     const created = { status: 201, body: { item: serializeOrder(order) } };
     if (!idempotency) return { ...created, replayed: false };
     return { ...(await saveIdempotentResponse(tx, idempotency.scope, idempotency.hash, created)), replayed: false };
@@ -219,13 +220,19 @@ ordersRouter.patch("/bulk", async (request, response) => {
         throw new HttpError(409, "VERSION_CONFLICT", "An order changed while this bulk update was being applied.");
       }
     }
+    const metricOrders = new Map<string, string[]>();
     for (const order of changedInRequestOrder) {
       await tx.orderStatusHistory.create({
         data: { orderId: order.id, changedBy, fromStatus: order.status, toStatus: input.status },
       });
-      metricDays.set(order.createdAt.toISOString().slice(0, 10), order.createdAt);
+      if (!affectsSalesMetrics(order.status, input.status)) continue;
+      const dayKey = order.createdAt.toISOString().slice(0, 10);
+      metricDays.set(dayKey, order.createdAt);
+      metricOrders.set(dayKey, [...(metricOrders.get(dayKey) ?? []), order.id]);
     }
-    for (const date of metricDays.values()) await refreshSalesMetrics(tx, date, ownerId);
+    for (const [dayKey, date] of [...metricDays.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      await refreshSalesMetrics(tx, date, ownerId, await orderCategoryIds(tx, metricOrders.get(dayKey)!));
+    }
     return { updatedCount: changedInRequestOrder.length, ids: changedInRequestOrder.map((order) => order.id) };
   }));
   response.json(result);
@@ -292,7 +299,9 @@ ordersRouter.patch("/:id/status", async (request, response) => {
         data: { orderId: id, changedBy, fromStatus: existing.status, toStatus: input.status },
       });
     }
-    await refreshSalesMetrics(tx, existing.createdAt, ownerId);
+    if (affectsSalesMetrics(existing.status, input.status)) {
+      await refreshSalesMetrics(tx, existing.createdAt, ownerId, await orderCategoryIds(tx, [id]));
+    }
     return tx.order.findUniqueOrThrow({ where: { id }, include: orderInclude });
   }));
   response.json({ item: serializeOrder(item) });
@@ -321,6 +330,7 @@ ordersRouter.patch("/:id", async (request, response) => {
     if (changed.count !== 1) {
       throw new HttpError(409, "VERSION_CONFLICT", "This order was updated by another request; reload and retry.");
     }
+    const previousCategories = await orderCategoryIds(tx, [id]);
     await tx.orderItem.deleteMany({ where: { orderId: id } });
     await tx.orderItem.createMany({
       data: pricedItems.map((priced) => ({
@@ -331,7 +341,10 @@ ordersRouter.patch("/:id", async (request, response) => {
         unitCost: priced.unitCost,
       })),
     });
-    await refreshSalesMetrics(tx, existing.createdAt, ownerId);
+    await refreshSalesMetrics(tx, existing.createdAt, ownerId, [
+      ...previousCategories,
+      ...pricedItems.map((priced) => priced.categoryId),
+    ]);
     return tx.order.findUniqueOrThrow({ where: { id }, include: orderInclude });
   });
   response.json({ item: serializeOrder(item) });
@@ -343,8 +356,9 @@ ordersRouter.delete("/:id", async (request, response) => {
   await prisma.$transaction(async (tx) => {
     const order = await tx.order.findFirst({ where: { id, ownerId } });
     if (!order) throw new HttpError(404, "ORDER_NOT_FOUND", "Order not found.");
+    const categories = await orderCategoryIds(tx, [id]);
     await tx.order.delete({ where: { id } });
-    await refreshSalesMetrics(tx, order.createdAt, ownerId);
+    await refreshSalesMetrics(tx, order.createdAt, ownerId, categories);
   });
   response.status(204).end();
 });

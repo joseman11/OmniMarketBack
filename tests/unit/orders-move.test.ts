@@ -110,4 +110,18 @@ describe("Kanban move", () => {
     expect(isRetryableTransactionError(new HttpError(409, "VERSION_CONFLICT", "stale"))).toBe(false);
     expect(isRetryableTransactionError({ code: "P2002" })).toBe(false);
   });
+
+  it("skips the metrics refresh for moves that do not cancel or restore an order", async () => {
+    await move();
+    expect(prismaMock.$executeRaw.mock.calls.map(sqlText).join("\n")).not.toContain("sales_daily_metrics");
+  });
+
+  it("refreshes only the order's categories when it is cancelled", async () => {
+    prismaMock.orderItem.findMany.mockResolvedValue([{ product: { categoryId: "00000000-0000-4000-8000-0000000000aa" } }]);
+    const response = await move({ status: "CANCELLED", position: 0, expectedVersion: 4 });
+    expect(response.status).toBe(200);
+    const metricCalls = prismaMock.$executeRaw.mock.calls.filter((call) => sqlText(call).includes("sales_daily_metrics"));
+    expect(metricCalls).toHaveLength(2);
+    expect((metricCalls[0]![0] as { values: unknown[] }).values).toContainEqual(["00000000-0000-4000-8000-0000000000aa"]);
+  });
 });
