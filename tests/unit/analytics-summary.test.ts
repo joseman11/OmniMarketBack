@@ -39,4 +39,19 @@ describe("analytics summary", () => {
     expect(result.summary).toEqual({ ordersCount: 1, revenue: "2620.00", avgTicket: "2620.00", grossMargin: "775.00" });
     expect(prismaMock.salesDailyMetric.aggregate).not.toHaveBeenCalled();
   });
+
+  it("averages totals above DECIMAL(12,2) instead of failing with a RangeError", async () => {
+    // Two valid orders of 5 000 000 000.00 add up to 10 000 000 000.00, beyond the per-order parser's range.
+    prismaMock.order.aggregate.mockResolvedValue({
+      _count: { _all: 2 },
+      _sum: { total: decimal("10000000000.00"), margin: decimal("4000000000.00") },
+    });
+    const result = await loadAnalytics({}, OWNER_ID);
+    expect(result.summary).toEqual({
+      ordersCount: 2,
+      revenue: "10000000000.00",
+      avgTicket: "5000000000.00",
+      grossMargin: "4000000000.00",
+    });
+  });
 });

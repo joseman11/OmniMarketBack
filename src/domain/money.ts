@@ -26,6 +26,20 @@ export function toCents(value: string | number): bigint {
   return BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
 }
 
+const AGGREGATE_PATTERN = /^-?\d+(?:\.\d{1,2})?$/;
+
+/**
+ * Converts an accumulated amount (a SUM over many rows, e.g. Decimal.toFixed(2)) to cents. Unlike toCents it
+ * accepts any number of integer digits and a sign, because aggregates legitimately exceed DECIMAL(12,2).
+ */
+export function aggregateToCents(value: string): bigint {
+  if (!AGGREGATE_PATTERN.test(value)) throw new RangeError("Aggregated amounts must be decimal strings with up to two decimals.");
+  const negative = value.startsWith("-");
+  const [whole = "0", fraction = ""] = (negative ? value.slice(1) : value).split(".");
+  const cents = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
+  return negative ? -cents : cents;
+}
+
 export function fromCents(cents: bigint): string {
   const sign = cents < 0n ? "-" : "";
   const absolute = cents < 0n ? -cents : cents;

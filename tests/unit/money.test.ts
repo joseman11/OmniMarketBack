@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { averageCents, calculateOrderAmounts, formatCurrency, fromCents, isMoneyInput, toCents } from "../../src/domain/money.js";
+import { aggregateToCents, averageCents, calculateOrderAmounts, formatCurrency, fromCents, isMoneyInput, toCents } from "../../src/domain/money.js";
 
 describe("financial calculations", () => {
   it("accepts decimal money with at most two fractional digits", () => {
@@ -60,5 +60,13 @@ describe("financial calculations", () => {
   it("returns zero for an empty average and rejects invalid counts", () => {
     expect(averageCents(1200n, 0)).toBe(0n);
     expect(() => averageCents(1200n, -1)).toThrow(/non-negative integer/);
+  });
+
+  it("parses accumulated amounts beyond DECIMAL(12,2) without RangeError", () => {
+    expect(aggregateToCents("10000000000.00")).toBe(1_000_000_000_000n);
+    expect(aggregateToCents("123456789012345.5")).toBe(12_345_678_901_234_550n);
+    expect(aggregateToCents("-2.50")).toBe(-250n);
+    expect(fromCents(averageCents(aggregateToCents("10000000000.00"), 2))).toBe("5000000000.00");
+    expect(() => aggregateToCents("1e10")).toThrow(RangeError);
   });
 });

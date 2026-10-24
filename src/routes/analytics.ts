@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { prisma } from "../db/prisma.js";
 import { analyticsQuerySchema, kanbanStatusQuerySchema } from "../domain/validation.js";
-import { averageCents, fromCents, toCents } from "../domain/money.js";
+import { aggregateToCents, averageCents, fromCents } from "../domain/money.js";
 import { HttpError } from "../http/errors.js";
 import { parseOrThrow } from "../http/validation.js";
 import { utcDayBounds } from "../services/analytics.js";
@@ -57,7 +57,7 @@ export async function loadAnalytics(input: unknown, ownerId: string) {
   const orderCount = summary.orderCount;
   const avgTicket = orderCount === 0
     ? "0.00"
-    : fromCents(averageCents(toCents(revenue), orderCount));
+    : fromCents(averageCents(aggregateToCents(revenue), orderCount));
 
   return {
     summary: { ordersCount: orderCount, revenue, avgTicket, grossMargin },
