@@ -23,6 +23,7 @@ afterAll(async () => server.close());
 beforeEach(() => {
   resetPrismaMock();
   vi.spyOn(console, "log").mockImplementation(() => undefined);
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
   vi.spyOn(console, "error").mockImplementation(() => undefined);
   prismaMock.session.findUnique.mockResolvedValue({
     id: "s1",

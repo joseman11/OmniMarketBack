@@ -15,6 +15,7 @@ afterAll(async () => server.close());
 beforeEach(() => {
   resetPrismaMock();
   vi.spyOn(console, "log").mockImplementation(() => undefined);
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
 });
 
 function errorLogs(spy: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {

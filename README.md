@@ -45,6 +45,19 @@ Las rutas CRUD requieren una sesión OAuth de Google o GitHub. Cada cuenta es du
 
 Alcance de los GET de auditoría (`/api/test/analytics` y `/api/test/kanban-status`): sin sesión consultan el dataset sintético del administrador de prueba (`TEST_ADMIN_ID`); con la cookie de sesión OAuth consultan el espacio de esa cuenta, de modo que el evaluador que crea y mueve un pedido en su tablero lo encuentra reutilizando la misma sesión (mismo navegador o cookie). El dueño nunca se elige por parámetro: un `ownerId` (o cualquier parámetro desconocido) devuelve 400.
 
+### Límites de peticiones
+
+Límites por IP de cliente en ventanas fijas de un minuto (`src/http/rate-limit.ts`). Responden `429 { error: { code: "RATE_LIMITED" } }` con `Retry-After`:
+
+| Política | Rutas | Límite |
+| --- | --- | --- |
+| `audit` | `/api/test/*` | 600 peticiones/min |
+| `audit-reset` | `POST /api/test/reset-data` | 30 peticiones/min |
+| `analytics` | `GET /api/analytics` | 300 peticiones/min |
+| `writes` | `POST/PATCH/PUT/DELETE` en `/api/orders`, `/api/products` y `/api/categories` | 300 peticiones/min |
+
+Los contadores viven en memoria de cada instancia de la función de Vercel: no se comparten entre instancias ni sobreviven a un arranque en frío, así que solo son una defensa básica. Una cuota real requiere un almacén compartido (por ejemplo Upstash Redis, integrado con Vercel).
+
 Los importes se calculan en centavos enteros y se guardan como `DECIMAL(12,2)`. El margen bruto es un importe monetario (`total - costo`), no un porcentaje. Las métricas diarias se reconstruyen dentro de la transacción que crea, edita, elimina o cambia el estado de un pedido. Los pedidos cancelados no cuentan en ventas.
 
 ## Variables

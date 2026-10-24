@@ -6,6 +6,7 @@ import { getEnv } from "./config/env.js";
 import { prisma } from "./db/prisma.js";
 import { errorResponse, HttpError } from "./http/errors.js";
 import { describeError, logEvent, normalizeRoute } from "./http/logger.js";
+import { createRateLimiter, RATE_LIMITS } from "./http/rate-limit.js";
 import { assignRequestId, logRequests } from "./http/request-context.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { authRouter } from "./routes/auth.js";
@@ -41,12 +42,15 @@ export function createApp(app = express()) {
     response.status(200).json({ status: "ok", service: "omnimarket-api" });
   });
 
+  // Per-instance limits (see RATE_LIMITS); each app gets its own counters.
+  const writes = createRateLimiter(RATE_LIMITS.writes);
   app.use("/api/auth", authRouter);
-  app.use("/api/analytics", requireAuth, analyticsRouter);
-  app.use("/api/categories", requireAuth, categoriesRouter);
-  app.use("/api/products", requireAuth, productsRouter);
-  app.use("/api/orders", requireAuth, ordersRouter);
-  app.use("/api/test", testRouter);
+  app.use("/api/analytics", createRateLimiter(RATE_LIMITS.analytics), requireAuth, analyticsRouter);
+  app.use("/api/categories", writes, requireAuth, categoriesRouter);
+  app.use("/api/products", writes, requireAuth, productsRouter);
+  app.use("/api/orders", writes, requireAuth, ordersRouter);
+  app.use("/api/test/reset-data", createRateLimiter(RATE_LIMITS.auditReset));
+  app.use("/api/test", createRateLimiter(RATE_LIMITS.audit), testRouter);
 
   app.use((_request, _response, next) => next(new HttpError(404, "NOT_FOUND", "Route not found.")));
 

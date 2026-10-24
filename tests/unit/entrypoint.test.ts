@@ -8,6 +8,7 @@ describe("Vercel entrypoint", () => {
     const { default: app } = await import("../../src/app.js");
     expect(typeof app).toBe("function");
     vi.spyOn(console, "log").mockImplementation(() => undefined);
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const server = await startServer(app);
     try {
       const health = await server.request("GET", "/api/health");
