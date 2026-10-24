@@ -74,4 +74,19 @@ test.describe("data integrity against PostgreSQL", () => {
     const all = await (await request.get("/api/test/analytics")).json();
     expect(all.summary).toMatchObject({ ordersCount: 3, revenue: "5360.00" });
   });
+
+  test("concurrent Kanban moves never fail with 500 and keep positions unique per column", async ({ request }) => {
+    const created = [];
+    for (const n of [1, 2, 3, 4, 5, 6]) created.push((await (await createOrder(request, `mv-${n}@example.test`)).json()).item as { id: string; version: number });
+    const targets = ["PROCESSING", "SHIPPED", "PROCESSING", "SHIPPED", "PROCESSING", "SHIPPED"];
+    const responses = await Promise.all(created.map((order, index) => request.patch(`/api/orders/${order.id}/status`, {
+      data: { status: targets[index], position: 0, expectedVersion: order.version },
+    })));
+    for (const response of responses) expect([200, 409]).toContain(response.status());
+
+    const board = await (await request.get("/api/orders?limit=100")).json() as { items: Array<{ status: string; position: number }> };
+    const byColumn = new Map<string, number[]>();
+    for (const order of board.items) byColumn.set(order.status, [...(byColumn.get(order.status) ?? []), order.position]);
+    for (const positions of byColumn.values()) expect(new Set(positions).size).toBe(positions.length);
+  });
 });

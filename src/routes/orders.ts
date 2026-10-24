@@ -4,6 +4,7 @@ import { Prisma, type OrderStatus } from "@prisma/client";
 import { z } from "zod";
 import { lockBoardColumns } from "../db/locks.js";
 import { prisma } from "../db/prisma.js";
+import { withTransactionRetry } from "../db/transaction.js";
 import { calculateOrderAmounts } from "../domain/money.js";
 import {
   bulkOrderSchema,
@@ -167,13 +168,15 @@ ordersRouter.patch("/bulk", async (request, response) => {
   const input = parseOrThrow(bulkOrderSchema, request.body);
   const changedBy = request.authUser!.id;
   const ownerId = changedBy;
-  const result = await prisma.$transaction(async (tx) => {
+  const result = await withTransactionRetry("orders.bulk", () => prisma.$transaction(async (tx) => {
     const orders = await tx.order.findMany({ where: { id: { in: input.ids }, ownerId } });
     if (orders.length !== input.ids.length) {
       throw new HttpError(404, "ORDER_NOT_FOUND", "One or more orders do not exist.");
     }
     const changed = orders.filter((order) => order.status !== input.status);
     if (changed.length === 0) return { updatedCount: 0, ids: [] as string[] };
+    // Same lock order as single moves; rows that changed meanwhile fail the version guard below (409).
+    await lockBoardColumns(tx, ownerId, [input.status, ...changed.map((order) => order.status)]);
 
     const changedIds = new Set(changed.map((order) => order.id));
     const sourceStatuses = [...new Set(changed.map((order) => order.status))];
@@ -224,7 +227,7 @@ ordersRouter.patch("/bulk", async (request, response) => {
     }
     for (const date of metricDays.values()) await refreshSalesMetrics(tx, date, ownerId);
     return { updatedCount: changedInRequestOrder.length, ids: changedInRequestOrder.map((order) => order.id) };
-  });
+  }));
   response.json(result);
 });
 
@@ -233,36 +236,45 @@ ordersRouter.patch("/:id/status", async (request, response) => {
   const input = parseOrThrow(moveOrderSchema, request.body);
   const changedBy = request.authUser!.id;
   const ownerId = changedBy;
-  const item = await prisma.$transaction(async (tx) => {
+  const item = await withTransactionRetry("orders.move", () => prisma.$transaction(async (tx) => {
+    const found = await tx.order.findFirst({ where: { id, ownerId }, select: { status: true } });
+    if (!found) throw new HttpError(404, "ORDER_NOT_FOUND", "Order not found.");
+    // Column locks in a fixed order, then a fresh read: a concurrent move of this card shows up as a new version.
+    await lockBoardColumns(tx, ownerId, [found.status, input.status]);
     const existing = await tx.order.findFirst({ where: { id, ownerId } });
     if (!existing) throw new HttpError(404, "ORDER_NOT_FOUND", "Order not found.");
     if (existing.version !== input.expectedVersion) {
       throw new HttpError(409, "VERSION_CONFLICT", "This order was updated by another request; reload and retry.");
     }
 
+    const cardSelect = { id: true, position: true, version: true } as const;
     const sourceOrders = await tx.order.findMany({
       where: { status: existing.status, ownerId },
+      select: cardSelect,
       orderBy: [{ position: "asc" }, { id: "asc" }],
     });
     const targetOrders = input.status === existing.status
       ? sourceOrders
       : await tx.order.findMany({
           where: { status: input.status, ownerId },
+          select: cardSelect,
           orderBy: [{ position: "asc" }, { id: "asc" }],
         });
 
+    const moved = { id: existing.id, position: existing.position, version: existing.version };
     const sourceAfter = sourceOrders.filter((order) => order.id !== id);
     const targetAfter = input.status === existing.status ? sourceAfter : [...targetOrders];
     const insertionIndex = Math.min(input.position, targetAfter.length);
-    targetAfter.splice(insertionIndex, 0, existing);
+    targetAfter.splice(insertionIndex, 0, moved);
 
-    const positionUpdates = new Map<string, { order: typeof existing; status: OrderStatus; position: number }>();
+    // Only cards whose position (or, for the moved card, status) changes are written.
+    const positionUpdates = new Map<string, { order: typeof moved; status: OrderStatus; position: number }>();
     for (const [position, order] of sourceAfter.entries()) {
       if (order.position !== position) positionUpdates.set(order.id, { order, status: existing.status, position });
     }
     for (const [position, order] of targetAfter.entries()) {
-      if (order.id === id || order.position !== position || input.status !== existing.status) {
-        positionUpdates.set(order.id, { order: order.id === id ? existing : order, status: input.status, position });
+      if (order.id === id || order.position !== position) {
+        positionUpdates.set(order.id, { order, status: input.status, position });
       }
     }
 
@@ -282,7 +294,7 @@ ordersRouter.patch("/:id/status", async (request, response) => {
     }
     await refreshSalesMetrics(tx, existing.createdAt, ownerId);
     return tx.order.findUniqueOrThrow({ where: { id }, include: orderInclude });
-  });
+  }));
   response.json({ item: serializeOrder(item) });
 });
 
