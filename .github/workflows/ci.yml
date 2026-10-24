@@ -1,12 +1,17 @@
 name: OmniMarket Backend CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main, dev]
   pull_request:
 
 permissions:
   contents: read
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   backend:
@@ -41,9 +46,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Generate Prisma client
         run: npm run db:generate
