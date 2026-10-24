@@ -44,6 +44,7 @@ export const analyticsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   from: isoDateSchema.optional(),
   to: isoDateSchema.optional(),
+  categoryId: z.string().uuid().optional(),
 }).strict().refine(({ from, to }) => !from || !to || from <= to, {
   message: "The from date must be on or before the to date.",
   path: ["to"],

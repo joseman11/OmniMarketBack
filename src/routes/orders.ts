@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { Router } from "express";
-import { Prisma } from "@prisma/client";
+import { Prisma, type OrderStatus } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../db/prisma.js";
 import { calculateOrderAmounts } from "../domain/money.js";
@@ -154,22 +154,57 @@ ordersRouter.patch("/bulk", async (request, response) => {
       throw new HttpError(404, "ORDER_NOT_FOUND", "One or more orders do not exist.");
     }
     const changed = orders.filter((order) => order.status !== input.status);
+    if (changed.length === 0) return { updatedCount: 0, ids: [] as string[] };
+
+    const changedIds = new Set(changed.map((order) => order.id));
+    const sourceStatuses = [...new Set(changed.map((order) => order.status))];
+    const [targetOrders, sourceOrders] = await Promise.all([
+      tx.order.findMany({
+        where: { status: input.status, isTestData, id: { notIn: [...changedIds] } },
+        orderBy: [{ position: "asc" }, { id: "asc" }],
+      }),
+      tx.order.findMany({
+        where: { status: { in: sourceStatuses }, isTestData, id: { notIn: [...changedIds] } },
+        orderBy: [{ status: "asc" }, { position: "asc" }, { id: "asc" }],
+      }),
+    ]);
+    const orderById = new Map(orders.map((order) => [order.id, order]));
+    const changedInRequestOrder = input.ids.map((id) => orderById.get(id)!).filter((order) => changedIds.has(order.id));
     const metricDays = new Map<string, Date>();
-    for (const order of changed) {
+    const positionUpdates = new Map<string, { order: (typeof orders)[number]; status: OrderStatus; position: number }>();
+    for (const [position, order] of [...targetOrders, ...changedInRequestOrder].entries()) {
+      if (order.status !== input.status || order.position !== position) {
+        positionUpdates.set(order.id, { order, status: input.status, position });
+      }
+    }
+    const sourceByStatus = new Map<OrderStatus, typeof sourceOrders>();
+    for (const order of sourceOrders) {
+      const group = sourceByStatus.get(order.status) ?? [];
+      group.push(order);
+      sourceByStatus.set(order.status, group);
+    }
+    for (const group of sourceByStatus.values()) {
+      for (const [position, order] of group.entries()) {
+        if (order.position !== position) positionUpdates.set(order.id, { order, status: order.status, position });
+      }
+    }
+    for (const { order, status, position } of positionUpdates.values()) {
       const updated = await tx.order.updateMany({
         where: { id: order.id, version: order.version },
-        data: { status: input.status, version: { increment: 1 } },
+        data: { status, position, version: { increment: 1 } },
       });
       if (updated.count !== 1) {
         throw new HttpError(409, "VERSION_CONFLICT", "An order changed while this bulk update was being applied.");
       }
+    }
+    for (const order of changedInRequestOrder) {
       await tx.orderStatusHistory.create({
         data: { orderId: order.id, changedBy, fromStatus: order.status, toStatus: input.status },
       });
       metricDays.set(order.createdAt.toISOString().slice(0, 10), order.createdAt);
     }
     for (const date of metricDays.values()) await refreshSalesMetrics(tx, date, isTestData);
-    return { updatedCount: changed.length, ids: changed.map((order) => order.id) };
+    return { updatedCount: changedInRequestOrder.length, ids: changedInRequestOrder.map((order) => order.id) };
   });
   response.json(result);
 });
@@ -185,12 +220,41 @@ ordersRouter.patch("/:id/status", async (request, response) => {
     if (existing.version !== input.expectedVersion) {
       throw new HttpError(409, "VERSION_CONFLICT", "This order was updated by another request; reload and retry.");
     }
-    const updated = await tx.order.updateMany({
-      where: { id, version: input.expectedVersion },
-      data: { status: input.status, position: input.position, version: { increment: 1 } },
+
+    const sourceOrders = await tx.order.findMany({
+      where: { status: existing.status, isTestData },
+      orderBy: [{ position: "asc" }, { id: "asc" }],
     });
-    if (updated.count !== 1) {
-      throw new HttpError(409, "VERSION_CONFLICT", "This order was updated by another request; reload and retry.");
+    const targetOrders = input.status === existing.status
+      ? sourceOrders
+      : await tx.order.findMany({
+          where: { status: input.status, isTestData },
+          orderBy: [{ position: "asc" }, { id: "asc" }],
+        });
+
+    const sourceAfter = sourceOrders.filter((order) => order.id !== id);
+    const targetAfter = input.status === existing.status ? sourceAfter : [...targetOrders];
+    const insertionIndex = Math.min(input.position, targetAfter.length);
+    targetAfter.splice(insertionIndex, 0, existing);
+
+    const positionUpdates = new Map<string, { order: typeof existing; status: OrderStatus; position: number }>();
+    for (const [position, order] of sourceAfter.entries()) {
+      if (order.position !== position) positionUpdates.set(order.id, { order, status: existing.status, position });
+    }
+    for (const [position, order] of targetAfter.entries()) {
+      if (order.id === id || order.position !== position || input.status !== existing.status) {
+        positionUpdates.set(order.id, { order: order.id === id ? existing : order, status: input.status, position });
+      }
+    }
+
+    for (const { order, status, position } of positionUpdates.values()) {
+      const updated = await tx.order.updateMany({
+        where: { id: order.id, version: order.version },
+        data: { status, position, version: { increment: 1 } },
+      });
+      if (updated.count !== 1) {
+        throw new HttpError(409, "VERSION_CONFLICT", "An order changed while this move was being applied; reload and retry.");
+      }
     }
     if (existing.status !== input.status) {
       await tx.orderStatusHistory.create({

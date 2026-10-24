@@ -1,6 +1,6 @@
 # OmniMarket Backend
 
-API Node.js/TypeScript para OmniMarket Operations Hub. La API usa PostgreSQL y Prisma; el frontend Next.js está en otra carpeta y queda fuera de esta fase.
+API Node.js/TypeScript para OmniMarket Operations Hub. La API usa PostgreSQL y Prisma. El frontend Next.js proxy las rutas del backend a través de su mismo origen, incluidas las rutas OAuth, para usar de forma segura la cookie de sesión HttpOnly.
 
 ## Requisitos locales
 
@@ -34,9 +34,9 @@ La API usa `PORT` (3001 en `.env.example`) y el endpoint de salud es `GET /api/h
 | `POST /api/products` | Administrador | Crea un producto |
 | `GET /api/orders?page=1&limit=50` | Sesión | Lista pedidos por estado/búsqueda |
 | `POST /api/orders` | Sesión | Crea pedido y guarda precios/costos como snapshot |
-| `PATCH /api/orders/:id/status` | Sesión | Mueve una tarjeta con `expectedVersion` |
+| `PATCH /api/orders/:id/status` | Sesión | Mueve y reordena tarjetas con `expectedVersion` |
 | `PATCH /api/orders/bulk` | Sesión | Cambia el estado de hasta 100 pedidos atómicamente |
-| `GET /api/analytics?page=1&limit=50` | Sesión | Analítica paginada |
+| `GET /api/analytics?page=1&limit=50&from=&to=&categoryId=` | Sesión | Analítica paginada y filtrable |
 | `GET /api/test/analytics?page=1&limit=50` | Auditoría | Analítica paginada para evaluación |
 | `POST /api/test/reset-data` | Bearer `TEST_API_TOKEN` | Restaura datos repetibles de auditoría |
 | `GET /api/test/kanban-status?orderNumber=OM-TEST-1001` | Auditoría | Consulta estado, posición y versión persistidos |
@@ -50,8 +50,8 @@ Los importes se calculan en centavos enteros y se guardan como `DECIMAL(12,2)`. 
 | Variable | Propósito |
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL de Railway o local |
-| `API_ORIGIN` | URL pública de la API; base de callbacks OAuth |
-| `WEB_ORIGIN` | URL permitida para CORS y destino del callback exitoso |
+| `API_ORIGIN` | Origen público del frontend; base de callbacks OAuth proxificados |
+| `WEB_ORIGIN` | Origen permitido para CORS y destino del login exitoso (`/dashboard`) |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Credenciales privadas de Google OAuth |
 | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | Credenciales privadas de GitHub OAuth |
 | `ADMIN_EMAILS` | Correos verificados que reciben rol administrador |
@@ -60,7 +60,9 @@ Los importes se calculan en centavos enteros y se guardan como `DECIMAL(12,2)`. 
 | `E2E_TEST_AUTH` | Solo para pruebas; la ruta de sesión simulada requiere además `NODE_ENV=test` |
 | `PORT` | Puerto inyectado por Railway |
 
-Los callbacks OAuth deben registrarse como:
+En local, el frontend corre en `http://localhost:3000` y el backend en `http://localhost:3001`; configure `API_ORIGIN` y `WEB_ORIGIN` al origen del frontend. En Railway use el dominio público del frontend para ambas variables. Next reenvía `/api/auth/*` al backend y conserva las cookies en el host del frontend.
+
+Los callbacks OAuth deben registrarse en Google/GitHub con el origen del frontend:
 
 - Google: `${API_ORIGIN}/api/auth/google/callback`
 - GitHub: `${API_ORIGIN}/api/auth/github/callback`

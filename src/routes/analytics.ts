@@ -16,11 +16,13 @@ export async function loadAnalytics(input: unknown, isTestData = false) {
   const metricWhere = {
     isTestData,
     ...(Object.keys(bounds).length ? { day: bounds } : {}),
+    ...(query.categoryId ? { categoryId: query.categoryId } : {}),
   };
   const orderWhere = {
     status: { not: "CANCELLED" as const },
     isTestData,
     ...(Object.keys(bounds).length ? { createdAt: bounds } : {}),
+    ...(query.categoryId ? { items: { some: { product: { categoryId: query.categoryId } } } } : {}),
   };
 
   const [items, total, summary] = await Promise.all([
