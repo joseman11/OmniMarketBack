@@ -63,4 +63,15 @@ test.describe("data integrity against PostgreSQL", () => {
     const orders = await request.get("/api/orders?search=idem%40example.test");
     expect((await orders.json()).pagination.total).toBe(1);
   });
+
+  test("the category-filtered analytics summary matches its rows", async ({ request }) => {
+    // Fixtures: OM-TEST-1002 holds 120.00 of Hogar and 2500.00 of Tecnología.
+    const home = await (await request.get("/api/test/analytics?categoryId=00000000-0000-4000-8000-000000000010")).json();
+    expect(home.summary).toEqual({ ordersCount: 2, revenue: "360.00", avgTicket: "180.00", grossMargin: "225.00" });
+    const rowsRevenue = (home.items as Array<{ revenue: string }>).reduce((sum, row) => sum + Number(row.revenue), 0);
+    expect(rowsRevenue.toFixed(2)).toBe(home.summary.revenue);
+
+    const all = await (await request.get("/api/test/analytics")).json();
+    expect(all.summary).toMatchObject({ ordersCount: 3, revenue: "5360.00" });
+  });
 });
