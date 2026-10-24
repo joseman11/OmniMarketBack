@@ -141,6 +141,7 @@ model Product {
   items    OrderItem[]
 
   @@unique([ownerId, sku])
+  @@index([ownerId, name, id])
   @@index([ownerId, categoryId])
   @@index([categoryId])
   @@index([isTestData, categoryId])
@@ -226,6 +227,7 @@ model SalesDailyMetric {
 
   @@id([day, categoryId, isTestData])
   @@index([ownerId, day])
+  @@index([ownerId, categoryId, day])
   @@index([categoryId])
   @@index([isTestData, day])
   @@map("sales_daily_metrics")
