@@ -1,6 +1,6 @@
 import cors from "cors";
 import express, { type ErrorRequestHandler } from "express";
-import helmet from "helmet";
+import * as helmetModule from "helmet";
 import { attachSessionUser, requireAuth } from "./auth/middleware.js";
 import { getEnv } from "./config/env.js";
 import { prisma } from "./db/prisma.js";
@@ -10,6 +10,8 @@ import { authRouter } from "./routes/auth.js";
 import { ordersRouter } from "./routes/orders.js";
 import { categoriesRouter, productsRouter } from "./routes/products.js";
 import { testRouter } from "./routes/test.js";
+
+const helmet = (helmetModule as any).default ?? helmetModule;
 
 export function createApp() {
   const env = getEnv();
