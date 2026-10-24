@@ -1,5 +1,5 @@
 import { config as loadEnv } from "dotenv";
-import { createApp } from "./app.js";
+import { createApp } from "./application.js";
 import { getEnv } from "./config/env.js";
 import { prisma } from "./db/prisma.js";
 
