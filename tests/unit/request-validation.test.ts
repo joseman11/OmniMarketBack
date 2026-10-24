@@ -30,3 +30,16 @@ describe("request validation adapter", () => {
     }
   });
 });
+
+describe("validation issue cap", () => {
+  it("returns at most 20 issues to the client", () => {
+    const schema = z.array(z.number()).max(100);
+    try {
+      parseOrThrow(schema, Array.from({ length: 100 }, () => "x"));
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(HttpError);
+      expect((error as HttpError).details).toHaveLength(20);
+    }
+  });
+});

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z, type ZodTypeAny } from "zod";
 import { isMoneyInput } from "./money.js";
 
 export const orderStatusSchema = z.enum([
@@ -13,6 +13,14 @@ export const moneySchema = z.union([z.string(), z.number()]).refine(isMoneyInput
   message: "Enter a non-negative amount with up to two decimal places.",
 });
 
+/**
+ * Array whose length is checked before any element schema runs: an oversized array yields a single issue
+ * instead of one or more issues per element (zod keeps validating every element after .max() fails).
+ */
+export function boundedArray<T extends ZodTypeAny>(element: T, min: number, max: number) {
+  return z.array(z.unknown()).min(min).max(max).pipe(z.array(element));
+}
+
 export const itemInputSchema = z.object({
   productId: z.string().uuid(),
   quantity: z.number().int().min(1).max(1_000_000),
@@ -24,7 +32,7 @@ export const createOrderSchema = z.object({
     email: z.string().trim().email().max(254),
     city: z.string().trim().max(120).optional(),
   }).strict(),
-  items: z.array(itemInputSchema).min(1).max(100),
+  items: boundedArray(itemInputSchema, 1, 100),
 }).strict();
 
 export const orderListQuerySchema = z.object({
@@ -81,7 +89,7 @@ export const moveOrderSchema = z.object({
 }).strict();
 
 export const bulkOrderSchema = z.object({
-  ids: z.array(z.string().uuid()).min(1).max(100),
+  ids: boundedArray(z.string().uuid(), 1, 100),
   status: orderStatusSchema,
 }).strict().refine(({ ids }) => new Set(ids).size === ids.length, {
   message: "Order IDs must be unique.",
@@ -89,7 +97,7 @@ export const bulkOrderSchema = z.object({
 });
 
 export const updateOrderSchema = z.object({
-  items: z.array(itemInputSchema).min(1).max(100),
+  items: boundedArray(itemInputSchema, 1, 100),
   expectedVersion: z.number().int().min(1),
 }).strict();
 
