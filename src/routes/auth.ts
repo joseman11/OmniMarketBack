@@ -5,7 +5,7 @@ import { getEnv } from "../config/env.js";
 import { prisma } from "../db/prisma.js";
 import { HttpError } from "../http/errors.js";
 import { appendCookie, clearCookie, readCookie } from "../auth/cookies.js";
-import { createSession, deleteSession, publicUser, SESSION_COOKIE } from "../auth/session.js";
+import { createSession, deleteSession, publicUser, revokeSession, SESSION_COOKIE } from "../auth/session.js";
 import { TEST_ADMIN_ID } from "../services/test-fixtures.js";
 import { requireAuth } from "../auth/middleware.js";
 
@@ -65,8 +65,8 @@ async function startOAuth(provider: Provider, request: Request, response: Respon
     throw new HttpError(503, "OAUTH_NOT_CONFIGURED", `${provider} sign-in is not configured.`);
   }
 
-  // Starting a sign-in always ends the current session: access is granted only after the provider verifies again.
-  await deleteSession(readCookie(request, SESSION_COOKIE), response);
+  // Starting a sign-in keeps the current session: an abandoned or externally triggered login must not sign the
+  // user out. The previous session is revoked in finishOAuth, only once the new sign-in has succeeded.
 
   const state = createVerifier();
   const verifier = createVerifier();
@@ -263,6 +263,7 @@ async function findOrCreateUser(identity: Identity) {
 }
 
 async function finishOAuth(provider: Provider, request: Request, response: Response): Promise<void> {
+  const previousSession = readCookie(request, SESSION_COOKIE);
   const state = readCookie(request, stateCookie(provider));
   const verifier = readCookie(request, verifierCookie(provider));
   const returnTo = readCookie(request, returnToCookie(provider));
@@ -283,6 +284,7 @@ async function finishOAuth(provider: Provider, request: Request, response: Respo
   const identity = await fetchIdentity(provider, accessToken);
   const user = await findOrCreateUser(identity);
   await createSession(user.id, response);
+  await revokeSession(previousSession);
   response.redirect(302, new URL(safeReturnPath(returnTo), getEnv().WEB_ORIGIN).toString());
 }
 
