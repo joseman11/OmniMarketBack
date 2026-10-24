@@ -1,7 +1,6 @@
 import { Router } from "express";
-import { z } from "zod";
 import { prisma } from "../db/prisma.js";
-import { analyticsQuerySchema } from "../domain/validation.js";
+import { analyticsQuerySchema, kanbanStatusQuerySchema } from "../domain/validation.js";
 import { averageCents, fromCents, toCents } from "../domain/money.js";
 import { HttpError } from "../http/errors.js";
 import { parseOrThrow } from "../http/validation.js";
@@ -73,12 +72,7 @@ analyticsRouter.get("/", async (request, response) => {
 
 /** Audit lookup; defaults to the test administrator's workspace where the fixtures live. */
 export async function loadKanbanStatus(input: unknown, ownerId = TEST_ADMIN_ID) {
-  const query = parseOrThrow(
-    z.object({ orderId: z.string().uuid().optional(), orderNumber: z.string().min(1).max(80).optional() })
-      .strict()
-      .refine((value) => Boolean(value.orderId || value.orderNumber), { message: "Provide orderId or orderNumber." }),
-    input,
-  );
+  const query = parseOrThrow(kanbanStatusQuerySchema, input);
   const order = await prisma.order.findFirst({
     where: query.orderId
       ? { id: query.orderId, ownerId }

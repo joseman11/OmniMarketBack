@@ -72,6 +72,32 @@ describe("audit endpoint contract", () => {
     expect(response.body).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
   });
 
+  it.each([
+    "page=0", "page=10001", "page=abc", "page=1.5", "limit=0", "limit=-1", "limit=abc",
+    "from=2026-02-30", "from=2026-10-22&to=2026-10-21", "categoryId=not-a-uuid",
+  ])("rejects invalid analytics parameters (%s) with 400 before querying", async (query) => {
+    const response = await server.request("GET", `/api/test/analytics?${query}`);
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+    expect(prismaMock.salesDailyMetric.findMany).not.toHaveBeenCalled();
+  });
+
+  it("accepts the maximum page and page size", async () => {
+    mockAnalyticsData();
+    const response = await server.request("GET", "/api/test/analytics?page=10000&limit=100");
+    expect(response.status).toBe(200);
+    expect(prismaMock.salesDailyMetric.findMany.mock.calls[0]?.[0]).toMatchObject({ skip: 999_900, take: 100 });
+  });
+
+  it.each(["orderId=not-a-uuid", `orderNumber=${"x".repeat(81)}`, "orderNumber=", "extra=1&orderNumber=OM-1"])(
+    "rejects invalid Kanban lookups (%s) with 400",
+    async (query) => {
+      const response = await server.request("GET", `/api/test/kanban-status?${query}`);
+      expect(response.status).toBe(400);
+      expect(prismaMock.order.findFirst).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects unknown analytics parameters with 400", async () => {
     const response = await server.request("GET", "/api/test/analytics?unexpected=1");
     expect(response.status).toBe(400);

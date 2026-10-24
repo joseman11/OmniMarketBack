@@ -39,9 +39,13 @@ const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => 
   return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 }, { message: "Enter a valid calendar date in YYYY-MM-DD format." });
 
+/** Explicit pagination caps: a page beyond 10 000 (1 000 000 rows at the largest page size) is rejected. */
+export const MAX_PAGE = 10_000;
+export const MAX_PAGE_SIZE = 100;
+
 export const analyticsQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
+  page: z.coerce.number().int().min(1).max(MAX_PAGE).default(1),
+  limit: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(50),
   from: isoDateSchema.optional(),
   to: isoDateSchema.optional(),
   categoryId: z.string().uuid().optional(),
@@ -49,6 +53,11 @@ export const analyticsQuerySchema = z.object({
   message: "The from date must be on or before the to date.",
   path: ["to"],
 });
+
+export const kanbanStatusQuerySchema = z.object({
+  orderId: z.string().uuid().optional(),
+  orderNumber: z.string().min(1).max(80).optional(),
+}).strict().refine((value) => Boolean(value.orderId || value.orderNumber), { message: "Provide orderId or orderNumber." });
 
 export const productInputSchema = z.object({
   categoryId: z.string().uuid(),
