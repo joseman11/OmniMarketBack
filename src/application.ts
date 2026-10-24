@@ -5,6 +5,8 @@ import { attachSessionUser, requireAuth } from "./auth/middleware.js";
 import { getEnv } from "./config/env.js";
 import { prisma } from "./db/prisma.js";
 import { errorResponse, HttpError } from "./http/errors.js";
+import { describeError, logEvent, normalizeRoute } from "./http/logger.js";
+import { assignRequestId } from "./http/request-context.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { authRouter } from "./routes/auth.js";
 import { ordersRouter } from "./routes/orders.js";
@@ -21,6 +23,7 @@ export function createApp(app = express()) {
     env.WEB_ORIGIN,
     ...env.CORS_ALLOWED_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean),
   ]);
+  app.use(assignRequestId);
   app.use(helmetFn());
   app.use(cors({
     credentials: true,
@@ -48,13 +51,16 @@ export function createApp(app = express()) {
 
   const handleError: ErrorRequestHandler = (error, request, response, _next) => {
     const result = errorResponse(error);
-    // Se registra también en producción (logs de Vercel); al cliente solo llega el mensaje genérico.
+    // Se registra también en producción (Runtime Logs de Vercel); al cliente solo llega el mensaje genérico.
     if (result.status === 500) {
-      const code = (error as { code?: unknown } | null)?.code;
-      console.error(
-        `[INTERNAL_ERROR] ${request.method} ${request.path}${typeof code === "string" ? ` (code ${code})` : ""}`,
-        error instanceof Error ? (error.stack ?? error.message) : error,
-      );
+      logEvent("error", "http.request.failed", {
+        request_id: response.getHeader("X-Request-Id"),
+        method: request.method,
+        route: normalizeRoute(request.originalUrl),
+        status_code: 500,
+        error_code: result.body.error.code,
+        ...describeError(error),
+      });
     }
     response.status(result.status).json(result.body);
   };
