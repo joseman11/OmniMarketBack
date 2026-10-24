@@ -145,6 +145,31 @@ describe("audit endpoint contract", () => {
     }
   });
 
+  it("scopes audit reads to the signed-in account when a session exists", async () => {
+    const userId = "11111111-1111-4111-8111-111111111111";
+    prismaMock.session.findUnique.mockResolvedValue({
+      id: "s1",
+      expires: new Date(Date.now() + 60_000),
+      user: { id: userId, email: "evaluador@example.test", name: null, image: null, role: "OPERATOR" },
+    });
+    mockAnalyticsData();
+    prismaMock.order.findFirst.mockResolvedValue({ id: "o1", orderNumber: "OM-1", status: "SHIPPED", position: 0, version: 2, updatedAt: new Date() });
+    const cookie = { Cookie: "omni_session=evaluator-token" };
+
+    expect((await server.request("GET", "/api/test/analytics", { headers: cookie })).status).toBe(200);
+    expect((await server.request("GET", "/api/test/kanban-status?orderNumber=OM-1", { headers: cookie })).status).toBe(200);
+    expect(prismaMock.salesDailyMetric.findMany.mock.calls[0]?.[0]).toMatchObject({ where: { ownerId: userId } });
+    expect(prismaMock.order.findFirst.mock.calls[0]?.[0]).toMatchObject({ where: { orderNumber: "OM-1", ownerId: userId } });
+  });
+
+  it("never accepts an ownerId chosen by the caller", async () => {
+    const other = "22222222-2222-4222-8222-222222222222";
+    expect((await server.request("GET", `/api/test/analytics?ownerId=${other}`)).status).toBe(400);
+    expect((await server.request("GET", `/api/test/kanban-status?orderNumber=OM-1&ownerId=${other}`)).status).toBe(400);
+    expect(prismaMock.salesDailyMetric.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.order.findFirst).not.toHaveBeenCalled();
+  });
+
   it("keeps CRUD routes behind an OAuth session", async () => {
     const response = await server.request("GET", "/api/orders");
     expect(response.status).toBe(401);
