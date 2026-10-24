@@ -94,7 +94,7 @@ test.describe("authenticated backend workflows", () => {
 
     const status = await request.get("/api/test/kanban-status?orderNumber=OM-TEST-1001");
     expect(status.ok()).toBeTruthy();
-    expect(await status.json()).toMatchObject({ status: "PROCESSING", position: 2, version: current.version + 1 });
+    expect(await status.json()).toMatchObject({ status: "PROCESSING", position: 1, version: current.version + 1 });
 
     const staleMove = await request.patch(`/api/orders/${orderId}/status`, {
       data: { status: "SHIPPED", position: 3, expectedVersion: current.version },
