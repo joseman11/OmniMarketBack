@@ -46,10 +46,15 @@ export function createApp(app = express()) {
 
   app.use((_request, _response, next) => next(new HttpError(404, "NOT_FOUND", "Route not found.")));
 
-  const handleError: ErrorRequestHandler = (error, _request, response, _next) => {
+  const handleError: ErrorRequestHandler = (error, request, response, _next) => {
     const result = errorResponse(error);
-    if (result.status === 500 && env.NODE_ENV !== "production") {
-      console.error(error);
+    // Se registra también en producción (logs de Vercel); al cliente solo llega el mensaje genérico.
+    if (result.status === 500) {
+      const code = (error as { code?: unknown } | null)?.code;
+      console.error(
+        `[INTERNAL_ERROR] ${request.method} ${request.path}${typeof code === "string" ? ` (code ${code})` : ""}`,
+        error instanceof Error ? (error.stack ?? error.message) : error,
+      );
     }
     response.status(result.status).json(result.body);
   };
