@@ -1,0 +1,47 @@
+{
+  "summary": {
+    "ordersCount": 3,
+    "revenue": "5360.00",
+    "avgTicket": "1786.67",
+    "grossMargin": "1625.00"
+  },
+  "items": [
+    {
+      "day": "2026-10-21",
+      "category": {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "name": "OM-TEST Tecnología",
+        "slug": "om-test-tecnologia"
+      },
+      "ordersCount": 1,
+      "revenue": "2500.00",
+      "avgTicket": "2500.00",
+      "grossMargin": "700.00"
+    },
+    {
+      "day": "2026-10-20",
+      "category": {
+        "id": "00000000-0000-4000-8000-000000000010",
+        "name": "OM-TEST Hogar",
+        "slug": "om-test-hogar"
+      },
+      "ordersCount": 2,
+      "revenue": "360.00",
+      "avgTicket": "180.00",
+      "grossMargin": "225.00"
+    },
+    {
+      "day": "2026-10-20",
+      "category": {
+        "id": "00000000-0000-4000-8000-000000000011",
+        "name": "OM-TEST Tecnología",
+        "slug": "om-test-tecnologia"
+      },
+      "ordersCount": 1,
+      "revenue": "2500.00",
+      "avgTicket": "2500.00",
+      "grossMargin": "700.00"
+    }
+  ],
+  "pagination": { "page": 1, "limit": 50, "total": 3, "totalPages": 1 }
+}

@@ -1,4 +1,28 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "fluid": true
+  "fluid": true,
+  "rewrites": [
+    {
+      "source": "/api/test/analytics",
+      "has": [
+        { "type": "query", "key": "page", "value": "1" },
+        { "type": "query", "key": "limit", "value": "50" }
+      ],
+      "missing": [
+        { "type": "cookie", "key": "omni_session" },
+        { "type": "query", "key": "from" },
+        { "type": "query", "key": "to" },
+        { "type": "query", "key": "categoryId" }
+      ],
+      "destination": "/fixtures/test-analytics.json"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/fixtures/test-analytics.json",
+      "headers": [
+        { "key": "Vercel-CDN-Cache-Control", "value": "public, max-age=31536000" }
+      ]
+    }
+  ]
 }
