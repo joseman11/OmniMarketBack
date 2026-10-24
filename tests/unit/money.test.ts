@@ -2,6 +2,20 @@ import { describe, expect, it } from "vitest";
 import { averageCents, calculateOrderAmounts, formatCurrency, fromCents, isMoneyInput, toCents } from "../../src/domain/money.js";
 
 describe("financial calculations", () => {
+  it.each(["0", "0.0", "0.00", "19.99", "9999999999.99", 12, 12.5])(
+    "accepts supported non-negative money input %s",
+    (value) => {
+      expect(isMoneyInput(value)).toBe(true);
+    },
+  );
+
+  it.each(["-1.00", "01.00", "1.234", "1e3", "1,000.00", " 1.00", "10000000000.00", Infinity, Number.NaN, null])(
+    "rejects unsupported money input %s",
+    (value) => {
+      expect(isMoneyInput(value)).toBe(false);
+    },
+  );
+
   it("accepts decimal money with at most two fractional digits", () => {
     expect(isMoneyInput("1234.50")).toBe(true);
     expect(isMoneyInput("12.345")).toBe(false);

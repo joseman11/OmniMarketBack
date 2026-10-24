@@ -109,4 +109,40 @@ describe("input schemas and filters", () => {
   it("omits date bounds when no range is requested", () => {
     expect(dateRangeWhere()).toEqual({});
   });
+
+  it("applies order-list defaults and accepts trimmed search terms", () => {
+    expect(orderListQuerySchema.parse({ search: "  OM-1001  " })).toMatchObject({
+      page: 1,
+      limit: 50,
+      search: "OM-1001",
+    });
+  });
+
+  it("rejects out-of-range pages, limits, and overly long search terms", () => {
+    expect(orderListQuerySchema.safeParse({ page: 0 }).success).toBe(false);
+    expect(orderListQuerySchema.safeParse({ limit: 101 }).success).toBe(false);
+    expect(orderListQuerySchema.safeParse({ search: "x".repeat(121) }).success).toBe(false);
+  });
+
+  it("rejects non-UUID category filters and invalid product numeric boundaries", () => {
+    expect(analyticsQuerySchema.safeParse({ categoryId: "not-a-uuid" }).success).toBe(false);
+    expect(productInputSchema.safeParse({
+      categoryId: "00000000-0000-4000-8000-000000000001",
+      sku: "SKU-1",
+      name: "Product",
+      price: "1.001",
+      cost: "0.00",
+      stock: 0,
+      isActive: true,
+    }).success).toBe(false);
+    expect(productInputSchema.safeParse({
+      categoryId: "00000000-0000-4000-8000-000000000001",
+      sku: "SKU-1",
+      name: "Product",
+      price: "1.00",
+      cost: "0.00",
+      stock: -1,
+      isActive: true,
+    }).success).toBe(false);
+  });
 });
