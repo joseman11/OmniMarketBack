@@ -6,21 +6,21 @@ import { averageCents, fromCents, toCents } from "../domain/money.js";
 import { HttpError } from "../http/errors.js";
 import { parseOrThrow } from "../http/validation.js";
 import { utcDayBounds } from "../services/analytics.js";
-import { TEST_ADMIN_ID } from "../services/test-fixtures.js";
+import { TEST_ADMIN_ID } from "../domain/workspace.js";
 
 export const analyticsRouter = Router();
 
-export async function loadAnalytics(input: unknown, isTestData = false) {
+export async function loadAnalytics(input: unknown, ownerId: string) {
   const query = parseOrThrow(analyticsQuerySchema, input);
   const bounds = utcDayBounds(query.from, query.to);
   const metricWhere = {
-    isTestData,
+    ownerId,
     ...(Object.keys(bounds).length ? { day: bounds } : {}),
     ...(query.categoryId ? { categoryId: query.categoryId } : {}),
   };
   const orderWhere = {
     status: { not: "CANCELLED" as const },
-    isTestData,
+    ownerId,
     ...(Object.keys(bounds).length ? { createdAt: bounds } : {}),
     ...(query.categoryId ? { items: { some: { product: { categoryId: query.categoryId } } } } : {}),
   };
@@ -68,10 +68,11 @@ export async function loadAnalytics(input: unknown, isTestData = false) {
 }
 
 analyticsRouter.get("/", async (request, response) => {
-  response.json(await loadAnalytics(request.query, request.authUser?.id === TEST_ADMIN_ID));
+  response.json(await loadAnalytics(request.query, request.authUser!.id));
 });
 
-export async function loadKanbanStatus(input: unknown, isTestData = true) {
+/** Audit lookup; defaults to the test administrator's workspace where the fixtures live. */
+export async function loadKanbanStatus(input: unknown, ownerId = TEST_ADMIN_ID) {
   const query = parseOrThrow(
     z.object({ orderId: z.string().uuid().optional(), orderNumber: z.string().min(1).max(80).optional() })
       .strict()
@@ -80,8 +81,8 @@ export async function loadKanbanStatus(input: unknown, isTestData = true) {
   );
   const order = await prisma.order.findFirst({
     where: query.orderId
-      ? { id: query.orderId, isTestData }
-      : { orderNumber: query.orderNumber, isTestData },
+      ? { id: query.orderId, ownerId }
+      : { orderNumber: query.orderNumber, ownerId },
     select: { id: true, orderNumber: true, status: true, position: true, version: true, updatedAt: true },
   });
   if (!order) throw new HttpError(404, "ORDER_NOT_FOUND", "Order not found.");

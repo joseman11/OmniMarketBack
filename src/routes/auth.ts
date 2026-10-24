@@ -59,11 +59,14 @@ function createChallenge(verifier: string): string {
   return createHash("sha256").update(verifier).digest("base64url");
 }
 
-function startOAuth(provider: Provider, request: Request, response: Response): void {
+async function startOAuth(provider: Provider, request: Request, response: Response): Promise<void> {
   const credentials = providerCredentials(provider);
   if (!credentials.id || !credentials.secret) {
     throw new HttpError(503, "OAUTH_NOT_CONFIGURED", `${provider} sign-in is not configured.`);
   }
+
+  // Starting a sign-in always ends the current session: access is granted only after the provider verifies again.
+  await deleteSession(readCookie(request, SESSION_COOKIE), response);
 
   const state = createVerifier();
   const verifier = createVerifier();
@@ -98,6 +101,9 @@ function startOAuth(provider: Provider, request: Request, response: Response): v
     "scope",
     provider === "google" ? "openid email profile" : "read:user user:email",
   );
+  // Never let the provider sign in silently: Google always shows the account chooser and the consent screen;
+  // GitHub always shows its account picker (it offers no stronger re-prompt for an app already authorized).
+  authorizeUrl.searchParams.set("prompt", provider === "google" ? "select_account consent" : "select_account");
   if (provider === "google") authorizeUrl.searchParams.set("access_type", "online");
   response.redirect(302, authorizeUrl.toString());
 }

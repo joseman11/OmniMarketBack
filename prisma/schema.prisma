@@ -34,8 +34,15 @@ model User {
 
   accounts Account[]
   sessions Session[]
-  orders   Order[]
+  orders   Order[]              @relation("OrderCreator")
   history  OrderStatusHistory[]
+
+  // Workspace owned by this account: every account sees and manages only its own data.
+  ownedCustomers  Customer[]
+  ownedCategories Category[]
+  ownedProducts   Product[]
+  ownedOrders     Order[]            @relation("OrderOwner")
+  ownedMetrics    SalesDailyMetric[]
 
   @@map("users")
 }
@@ -84,35 +91,43 @@ model VerificationToken {
 
 model Customer {
   id        String   @id @default(uuid()) @db.Uuid
+  ownerId   String   @map("owner_id") @db.Uuid
   name      String
-  email     String   @unique
+  email     String
   city      String?
   createdAt DateTime @default(now()) @map("created_at")
   isTestData Boolean  @default(false) @map("is_test_data")
 
+  owner  User    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   orders Order[]
 
+  @@unique([ownerId, email])
   @@map("customers")
   @@index([isTestData])
 }
 
 model Category {
-  id   String @id @default(uuid()) @db.Uuid
-  name String @unique
-  slug String @unique
+  id      String @id @default(uuid()) @db.Uuid
+  ownerId String @map("owner_id") @db.Uuid
+  name    String
+  slug    String
   isTestData Boolean @default(false) @map("is_test_data")
 
+  owner    User               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   products Product[]
   metrics  SalesDailyMetric[]
 
+  @@unique([ownerId, name])
+  @@unique([ownerId, slug])
   @@map("categories")
   @@index([isTestData])
 }
 
 model Product {
   id         String  @id @default(uuid()) @db.Uuid
+  ownerId    String  @map("owner_id") @db.Uuid
   categoryId String  @map("category_id") @db.Uuid
-  sku        String  @unique
+  sku        String
   name       String
   price      Decimal @db.Decimal(12, 2)
   cost       Decimal @db.Decimal(12, 2)
@@ -120,9 +135,12 @@ model Product {
   isActive   Boolean @default(true) @map("is_active")
   isTestData Boolean @default(false) @map("is_test_data")
 
+  owner    User        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   category Category    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   items    OrderItem[]
 
+  @@unique([ownerId, sku])
+  @@index([ownerId, categoryId])
   @@index([categoryId])
   @@index([isTestData, categoryId])
   @@index([isTestData])
@@ -132,6 +150,7 @@ model Product {
 model Order {
   id          String      @id @default(uuid()) @db.Uuid
   orderNumber String      @unique @map("order_number")
+  ownerId     String      @map("owner_id") @db.Uuid
   customerId  String      @map("customer_id") @db.Uuid
   createdBy   String?     @map("created_by") @db.Uuid
   status      OrderStatus @default(PENDING)
@@ -143,11 +162,14 @@ model Order {
   updatedAt   DateTime    @updatedAt @map("updated_at")
   isTestData  Boolean     @default(false) @map("is_test_data")
 
+  owner    User                 @relation("OrderOwner", fields: [ownerId], references: [id], onDelete: Cascade)
   customer Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  creator  User?                @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+  creator  User?                @relation("OrderCreator", fields: [createdBy], references: [id], onDelete: SetNull)
   items    OrderItem[]
   history  OrderStatusHistory[]
 
+  @@index([ownerId, status, position])
+  @@index([ownerId, createdAt])
   @@index([customerId])
   @@index([status, position])
   @@index([createdAt])
@@ -190,6 +212,7 @@ model OrderStatusHistory {
 
 model SalesDailyMetric {
   day         DateTime @db.Date
+  ownerId     String   @map("owner_id") @db.Uuid
   categoryId  String   @map("category_id") @db.Uuid
   isTestData  Boolean  @default(false) @map("is_test_data")
   ordersCount Int      @map("orders_count")
@@ -197,9 +220,11 @@ model SalesDailyMetric {
   avgTicket   Decimal  @map("avg_ticket") @db.Decimal(12, 2)
   grossMargin Decimal  @map("gross_margin") @db.Decimal(14, 2)
 
+  owner    User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
 
   @@id([day, categoryId, isTestData])
+  @@index([ownerId, day])
   @@index([categoryId])
   @@index([isTestData, day])
   @@map("sales_daily_metrics")

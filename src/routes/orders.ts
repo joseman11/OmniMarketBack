@@ -14,7 +14,7 @@ import {
 import { HttpError } from "../http/errors.js";
 import { parseOrThrow } from "../http/validation.js";
 import { refreshSalesMetrics } from "../services/analytics.js";
-import { TEST_ADMIN_ID } from "../services/test-fixtures.js";
+import { isTestWorkspace } from "../domain/workspace.js";
 import { serializeOrder } from "../domain/serializers.js";
 
 export const ordersRouter = Router();
@@ -32,10 +32,10 @@ function makeOrderNumber(): string {
 async function resolvePricedItems(
   tx: Prisma.TransactionClient,
   inputItems: Array<{ productId: string; quantity: number }>,
-  isTestData: boolean,
+  ownerId: string,
 ) {
   const ids = [...new Set(inputItems.map((item) => item.productId))];
-  const products = await tx.product.findMany({ where: { id: { in: ids }, isActive: true, isTestData } });
+  const products = await tx.product.findMany({ where: { id: { in: ids }, isActive: true, ownerId } });
   const byId = new Map(products.map((product) => [product.id, product]));
   if (byId.size !== ids.length) {
     throw new HttpError(400, "PRODUCT_UNAVAILABLE", "Every order item must reference an active product.");
@@ -53,7 +53,7 @@ async function resolvePricedItems(
 
 ordersRouter.get("/", async (request, response) => {
   const query = parseOrThrow(orderListQuerySchema, request.query);
-  const where: Prisma.OrderWhereInput = { isTestData: request.authUser?.id === TEST_ADMIN_ID };
+  const where: Prisma.OrderWhereInput = { ownerId: request.authUser!.id };
   if (query.status) where.status = query.status;
   if (query.search) {
     where.OR = [
@@ -81,7 +81,7 @@ ordersRouter.get("/", async (request, response) => {
 ordersRouter.get("/:id", async (request, response) => {
   const id = parseOrThrow(z.string().uuid(), request.params.id);
   const item = await prisma.order.findFirst({
-    where: { id, isTestData: request.authUser?.id === TEST_ADMIN_ID },
+    where: { id, ownerId: request.authUser!.id },
     include: orderInclude,
   });
   if (!item) throw new HttpError(404, "ORDER_NOT_FOUND", "Order not found.");
@@ -91,15 +91,13 @@ ordersRouter.get("/:id", async (request, response) => {
 ordersRouter.post("/", async (request, response) => {
   const input = parseOrThrow(createOrderSchema, request.body);
   const creatorId = request.authUser!.id;
-  const isTestData = creatorId === TEST_ADMIN_ID;
+  const ownerId = creatorId;
+  const isTestData = isTestWorkspace(ownerId);
   const item = await prisma.$transaction(async (tx) => {
-    const pricedItems = await resolvePricedItems(tx, input.items, isTestData);
+    const pricedItems = await resolvePricedItems(tx, input.items, ownerId);
     const amounts = calculateOrderAmounts(pricedItems);
     const email = input.customer.email.toLowerCase();
-    const existingCustomer = await tx.customer.findUnique({ where: { email } });
-    if (existingCustomer && existingCustomer.isTestData !== isTestData) {
-      throw new HttpError(409, "CUSTOMER_EMAIL_SCOPE_CONFLICT", "This email address is already used by a customer in another data scope.");
-    }
+    const existingCustomer = await tx.customer.findUnique({ where: { ownerId_email: { ownerId, email } } });
     const customer = existingCustomer
       ? await tx.customer.update({
           where: { id: existingCustomer.id },
@@ -112,14 +110,16 @@ ordersRouter.post("/", async (request, response) => {
           data: {
             name: input.customer.name,
             email,
+            ownerId,
             isTestData,
             ...(input.customer.city === undefined ? {} : { city: input.customer.city }),
           },
         });
-    const position = await tx.order.count({ where: { status: "PENDING", isTestData } });
+    const position = await tx.order.count({ where: { status: "PENDING", ownerId } });
     const order = await tx.order.create({
       data: {
         orderNumber: makeOrderNumber(),
+        ownerId,
         customerId: customer.id,
         createdBy: creatorId,
         status: "PENDING",
@@ -138,7 +138,7 @@ ordersRouter.post("/", async (request, response) => {
       },
       include: orderInclude,
     });
-    await refreshSalesMetrics(tx, order.createdAt, isTestData);
+    await refreshSalesMetrics(tx, order.createdAt, ownerId);
     return order;
   });
   response.status(201).json({ item: serializeOrder(item) });
@@ -147,9 +147,9 @@ ordersRouter.post("/", async (request, response) => {
 ordersRouter.patch("/bulk", async (request, response) => {
   const input = parseOrThrow(bulkOrderSchema, request.body);
   const changedBy = request.authUser!.id;
-  const isTestData = changedBy === TEST_ADMIN_ID;
+  const ownerId = changedBy;
   const result = await prisma.$transaction(async (tx) => {
-    const orders = await tx.order.findMany({ where: { id: { in: input.ids }, isTestData } });
+    const orders = await tx.order.findMany({ where: { id: { in: input.ids }, ownerId } });
     if (orders.length !== input.ids.length) {
       throw new HttpError(404, "ORDER_NOT_FOUND", "One or more orders do not exist.");
     }
@@ -160,11 +160,11 @@ ordersRouter.patch("/bulk", async (request, response) => {
     const sourceStatuses = [...new Set(changed.map((order) => order.status))];
     const [targetOrders, sourceOrders] = await Promise.all([
       tx.order.findMany({
-        where: { status: input.status, isTestData, id: { notIn: [...changedIds] } },
+        where: { status: input.status, ownerId, id: { notIn: [...changedIds] } },
         orderBy: [{ position: "asc" }, { id: "asc" }],
       }),
       tx.order.findMany({
-        where: { status: { in: sourceStatuses }, isTestData, id: { notIn: [...changedIds] } },
+        where: { status: { in: sourceStatuses }, ownerId, id: { notIn: [...changedIds] } },
         orderBy: [{ status: "asc" }, { position: "asc" }, { id: "asc" }],
       }),
     ]);
@@ -203,7 +203,7 @@ ordersRouter.patch("/bulk", async (request, response) => {
       });
       metricDays.set(order.createdAt.toISOString().slice(0, 10), order.createdAt);
     }
-    for (const date of metricDays.values()) await refreshSalesMetrics(tx, date, isTestData);
+    for (const date of metricDays.values()) await refreshSalesMetrics(tx, date, ownerId);
     return { updatedCount: changedInRequestOrder.length, ids: changedInRequestOrder.map((order) => order.id) };
   });
   response.json(result);
@@ -213,22 +213,22 @@ ordersRouter.patch("/:id/status", async (request, response) => {
   const id = parseOrThrow(z.string().uuid(), request.params.id);
   const input = parseOrThrow(moveOrderSchema, request.body);
   const changedBy = request.authUser!.id;
-  const isTestData = changedBy === TEST_ADMIN_ID;
+  const ownerId = changedBy;
   const item = await prisma.$transaction(async (tx) => {
-    const existing = await tx.order.findFirst({ where: { id, isTestData } });
+    const existing = await tx.order.findFirst({ where: { id, ownerId } });
     if (!existing) throw new HttpError(404, "ORDER_NOT_FOUND", "Order not found.");
     if (existing.version !== input.expectedVersion) {
       throw new HttpError(409, "VERSION_CONFLICT", "This order was updated by another request; reload and retry.");
     }
 
     const sourceOrders = await tx.order.findMany({
-      where: { status: existing.status, isTestData },
+      where: { status: existing.status, ownerId },
       orderBy: [{ position: "asc" }, { id: "asc" }],
     });
     const targetOrders = input.status === existing.status
       ? sourceOrders
       : await tx.order.findMany({
-          where: { status: input.status, isTestData },
+          where: { status: input.status, ownerId },
           orderBy: [{ position: "asc" }, { id: "asc" }],
         });
 
@@ -261,7 +261,7 @@ ordersRouter.patch("/:id/status", async (request, response) => {
         data: { orderId: id, changedBy, fromStatus: existing.status, toStatus: input.status },
       });
     }
-    await refreshSalesMetrics(tx, existing.createdAt, existing.isTestData);
+    await refreshSalesMetrics(tx, existing.createdAt, ownerId);
     return tx.order.findUniqueOrThrow({ where: { id }, include: orderInclude });
   });
   response.json({ item: serializeOrder(item) });
@@ -270,14 +270,14 @@ ordersRouter.patch("/:id/status", async (request, response) => {
 ordersRouter.patch("/:id", async (request, response) => {
   const id = parseOrThrow(z.string().uuid(), request.params.id);
   const input = parseOrThrow(updateOrderSchema, request.body);
-  const isTestData = request.authUser?.id === TEST_ADMIN_ID;
+  const ownerId = request.authUser!.id;
   const item = await prisma.$transaction(async (tx) => {
-    const existing = await tx.order.findFirst({ where: { id, isTestData } });
+    const existing = await tx.order.findFirst({ where: { id, ownerId } });
     if (!existing) throw new HttpError(404, "ORDER_NOT_FOUND", "Order not found.");
     if (existing.version !== input.expectedVersion) {
       throw new HttpError(409, "VERSION_CONFLICT", "This order was updated by another request; reload and retry.");
     }
-    const pricedItems = await resolvePricedItems(tx, input.items, isTestData);
+    const pricedItems = await resolvePricedItems(tx, input.items, ownerId);
     const amounts = calculateOrderAmounts(pricedItems);
     const changed = await tx.order.updateMany({
       where: { id, version: input.expectedVersion },
@@ -300,7 +300,7 @@ ordersRouter.patch("/:id", async (request, response) => {
         unitCost: priced.unitCost,
       })),
     });
-    await refreshSalesMetrics(tx, existing.createdAt, existing.isTestData);
+    await refreshSalesMetrics(tx, existing.createdAt, ownerId);
     return tx.order.findUniqueOrThrow({ where: { id }, include: orderInclude });
   });
   response.json({ item: serializeOrder(item) });
@@ -308,12 +308,12 @@ ordersRouter.patch("/:id", async (request, response) => {
 
 ordersRouter.delete("/:id", async (request, response) => {
   const id = parseOrThrow(z.string().uuid(), request.params.id);
-  const isTestData = request.authUser?.id === TEST_ADMIN_ID;
+  const ownerId = request.authUser!.id;
   await prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirst({ where: { id, isTestData } });
+    const order = await tx.order.findFirst({ where: { id, ownerId } });
     if (!order) throw new HttpError(404, "ORDER_NOT_FOUND", "Order not found.");
     await tx.order.delete({ where: { id } });
-    await refreshSalesMetrics(tx, order.createdAt, order.isTestData);
+    await refreshSalesMetrics(tx, order.createdAt, ownerId);
   });
   response.status(204).end();
 });

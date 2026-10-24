@@ -6,11 +6,12 @@ import { getEnv } from "../config/env.js";
 import { loadAnalytics } from "./analytics.js";
 import { resetTestData } from "../services/test-fixtures.js";
 import { loadKanbanStatus } from "./analytics.js";
+import { TEST_ADMIN_ID } from "../domain/workspace.js";
 
 export const testRouter = Router();
 
 testRouter.get("/analytics", async (request, response) => {
-  response.json(await loadAnalytics(request.query, true));
+  response.json(await loadAnalytics(request.query, TEST_ADMIN_ID));
 });
 
 testRouter.get("/kanban-status", async (request, response) => {
