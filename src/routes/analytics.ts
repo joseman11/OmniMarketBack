@@ -1,79 +1,131 @@
 import { Router } from "express";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma.js";
 import { analyticsQuerySchema, kanbanStatusQuerySchema } from "../domain/validation.js";
 import { aggregateToCents, averageCents, fromCents } from "../domain/money.js";
 import { HttpError } from "../http/errors.js";
 import { parseOrThrow } from "../http/validation.js";
-import { utcDayBounds } from "../services/analytics.js";
 import { TEST_ADMIN_ID } from "../domain/workspace.js";
 
 export const analyticsRouter = Router();
 
+type AnalyticsSqlItem = {
+  day: string;
+  category: { id: string; name: string; slug: string };
+  ordersCount: number;
+  revenue: string;
+  avgTicket: string;
+  grossMargin: string;
+};
+
+type AnalyticsSqlResult = {
+  total: number;
+  items: AnalyticsSqlItem[];
+  ordersCount: number;
+  revenue: string | null;
+  grossMargin: string | null;
+};
+
 export async function loadAnalytics(input: unknown, ownerId: string) {
   const query = parseOrThrow(analyticsQuerySchema, input);
-  const bounds = utcDayBounds(query.from, query.to);
-  const metricWhere = {
-    ownerId,
-    ...(Object.keys(bounds).length ? { day: bounds } : {}),
-    ...(query.categoryId ? { categoryId: query.categoryId } : {}),
-  };
-  const orderWhere = {
-    status: { not: "CANCELLED" as const },
-    ownerId,
-    ...(Object.keys(bounds).length ? { createdAt: bounds } : {}),
-  };
-
-  // With a category filter the summary adds only that category's lines, exactly like the rows it summarizes:
-  // the daily metrics already hold per-category revenue, margin and order counts (an order falls on one day).
+  const metricFrom = query.from ? Prisma.sql`AND m."day" >= ${query.from}::date` : Prisma.empty;
+  const metricTo = query.to ? Prisma.sql`AND m."day" < (${query.to}::date + 1)` : Prisma.empty;
+  const metricCategory = query.categoryId ? Prisma.sql`AND m."category_id" = ${query.categoryId}::uuid` : Prisma.empty;
+  const orderFrom = query.from ? Prisma.sql`AND o."created_at" >= ${query.from}::date::timestamp` : Prisma.empty;
+  const orderTo = query.to ? Prisma.sql`AND o."created_at" < (${query.to}::date + 1)::timestamp` : Prisma.empty;
   const summaryQuery = query.categoryId
-    ? prisma.salesDailyMetric.aggregate({
-        where: metricWhere,
-        _sum: { ordersCount: true, revenue: true, grossMargin: true },
-      }).then((result) => ({
-        orderCount: result._sum.ordersCount ?? 0,
-        revenue: result._sum.revenue,
-        margin: result._sum.grossMargin,
-      }))
-    : prisma.order.aggregate({
-        where: orderWhere,
-        _count: { _all: true },
-        _sum: { total: true, margin: true },
-      }).then((result) => ({ orderCount: result._count._all, revenue: result._sum.total, margin: result._sum.margin }));
+    ? Prisma.sql`
+        summary AS (
+          SELECT
+            COALESCE(SUM("ordersCount"), 0)::int AS "ordersCount",
+            COALESCE(SUM("revenue"), 0)::text AS "revenue",
+            COALESCE(SUM("grossMargin"), 0)::text AS "grossMargin"
+          FROM metric_rows
+        )`
+    : Prisma.sql`
+        summary AS (
+          SELECT
+            COUNT(*)::int AS "ordersCount",
+            COALESCE(SUM(o."total"), 0)::text AS "revenue",
+            COALESCE(SUM(o."margin"), 0)::text AS "grossMargin"
+          FROM "orders" o
+          WHERE o."owner_id" = ${ownerId}::uuid
+            AND o."status" <> 'CANCELLED'
+            ${orderFrom}
+            ${orderTo}
+        )`;
 
-  const [items, total, summary] = await Promise.all([
-    prisma.salesDailyMetric.findMany({
-      where: metricWhere,
-      include: { category: { select: { id: true, name: true, slug: true } } },
-      orderBy: [{ day: "desc" }, { categoryId: "asc" }],
-      skip: (query.page - 1) * query.limit,
-      take: query.limit,
-    }),
-    prisma.salesDailyMetric.count({ where: metricWhere }),
-    summaryQuery,
-  ]);
+  // Metrics, count, and summary share one PostgreSQL round trip. The unfiltered summary still aggregates whole
+  // orders (so a multi-category order is counted once); a category-filtered summary uses only that category's lines.
+  const [result] = await prisma.$queryRaw<AnalyticsSqlResult[]>(Prisma.sql`
+    WITH metric_rows AS MATERIALIZED (
+      SELECT
+        m."day",
+        m."category_id" AS "categoryId",
+        m."orders_count" AS "ordersCount",
+        m."revenue",
+        m."avg_ticket" AS "avgTicket",
+        m."gross_margin" AS "grossMargin",
+        c."name" AS "categoryName",
+        c."slug" AS "categorySlug"
+      FROM "sales_daily_metrics" m
+      JOIN "categories" c ON c."id" = m."category_id"
+      WHERE m."owner_id" = ${ownerId}::uuid
+        ${metricFrom}
+        ${metricTo}
+        ${metricCategory}
+    ),
+    page_rows AS (
+      SELECT * FROM metric_rows
+      ORDER BY "day" DESC, "categoryId" ASC
+      OFFSET ${(query.page - 1) * query.limit}
+      LIMIT ${query.limit}
+    ),
+    row_count AS (SELECT COUNT(*)::int AS "total" FROM metric_rows),
+    ${summaryQuery},
+    page_items AS (
+      SELECT COALESCE(
+        jsonb_agg(
+          jsonb_build_object(
+            'day', to_char("day", 'YYYY-MM-DD'),
+            'category', jsonb_build_object('id', "categoryId"::text, 'name', "categoryName", 'slug', "categorySlug"),
+            'ordersCount', "ordersCount",
+            'revenue', "revenue"::text,
+            'avgTicket', "avgTicket"::text,
+            'grossMargin', "grossMargin"::text
+          ) ORDER BY "day" DESC, "categoryId" ASC
+        ),
+        '[]'::jsonb
+      ) AS "items"
+      FROM page_rows
+    )
+    SELECT row_count."total", page_items."items", summary."ordersCount", summary."revenue", summary."grossMargin"
+    FROM row_count CROSS JOIN page_items CROSS JOIN summary
+  `);
 
-  const revenue = summary.revenue?.toFixed(2) ?? "0.00";
-  const grossMargin = summary.margin?.toFixed(2) ?? "0.00";
-  const orderCount = summary.orderCount;
+  if (!result) throw new Error("Analytics query returned no result row.");
+  const revenue = new Prisma.Decimal(result.revenue ?? "0").toFixed(2);
+  const grossMargin = new Prisma.Decimal(result.grossMargin ?? "0").toFixed(2);
+  const orderCount = result.ordersCount;
   const avgTicket = orderCount === 0
     ? "0.00"
     : fromCents(averageCents(aggregateToCents(revenue), orderCount));
 
   return {
     summary: { ordersCount: orderCount, revenue, avgTicket, grossMargin },
-    items: items.map((item) => ({
-      day: item.day.toISOString().slice(0, 10),
+    items: result.items.map((item) => ({
+      day: item.day,
       category: item.category,
       ordersCount: item.ordersCount,
-      revenue: item.revenue.toFixed(2),
-      avgTicket: item.avgTicket.toFixed(2),
-      grossMargin: item.grossMargin.toFixed(2),
+      revenue: new Prisma.Decimal(item.revenue).toFixed(2),
+      avgTicket: new Prisma.Decimal(item.avgTicket).toFixed(2),
+      grossMargin: new Prisma.Decimal(item.grossMargin).toFixed(2),
     })),
     pagination: {
       page: query.page,
       limit: query.limit,
-      total,
-      totalPages: Math.ceil(total / query.limit),
+      total: result.total,
+      totalPages: Math.ceil(result.total / query.limit),
     },
   };
 }

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { decimal, prismaMock, resetPrismaMock } from "./helpers/prisma-mock.js";
+import { prismaMock, resetPrismaMock, sqlText } from "./helpers/prisma-mock.js";
 import { startServer, type TestServer } from "./helpers/http.js";
 
 vi.mock("../../src/db/prisma.js", async () => ({ prisma: (await import("./helpers/prisma-mock.js")).prismaMock }));
@@ -35,19 +35,20 @@ beforeEach(() => {
 });
 
 function mockAnalyticsData(): void {
-  prismaMock.salesDailyMetric.findMany.mockResolvedValue([{
-    day: new Date("2026-10-20T00:00:00.000Z"),
-    category: { id: "00000000-0000-4000-8000-000000000010", name: "OM-TEST Hogar", slug: "om-test-hogar" },
-    ordersCount: 2,
-    revenue: decimal("360.00"),
-    avgTicket: decimal("180.00"),
-    grossMargin: decimal("225.00"),
+  prismaMock.$queryRaw.mockResolvedValue([{
+    total: 1,
+    items: [{
+      day: "2026-10-20",
+      category: { id: "00000000-0000-4000-8000-000000000010", name: "OM-TEST Hogar", slug: "om-test-hogar" },
+      ordersCount: 2,
+      revenue: "360.00",
+      avgTicket: "180.00",
+      grossMargin: "225.00",
+    }],
+    ordersCount: 3,
+    revenue: "5360.00",
+    grossMargin: "1625.00",
   }]);
-  prismaMock.salesDailyMetric.count.mockResolvedValue(1);
-  prismaMock.order.aggregate.mockResolvedValue({
-    _count: { _all: 3 },
-    _sum: { total: decimal("5360.00"), margin: decimal("1625.00") },
-  });
 }
 
 describe("audit endpoint contract", () => {
@@ -64,18 +65,14 @@ describe("audit endpoint contract", () => {
       pagination: { page: 1, limit: 50, total: 3, totalPages: 1 },
     });
     expect(response.headers.get("vercel-cdn-cache-control")).toBe("public, max-age=60");
-    expect(prismaMock.salesDailyMetric.findMany).not.toHaveBeenCalled();
-    expect(prismaMock.salesDailyMetric.count).not.toHaveBeenCalled();
-    expect(prismaMock.order.aggregate).not.toHaveBeenCalled();
+    expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
   });
 
   it("uses live analytics for filtered anonymous requests", async () => {
     mockAnalyticsData();
     const response = await server.request("GET", "/api/test/analytics?page=1&limit=50&from=2026-10-20");
     expect(response.status).toBe(200);
-    expect(prismaMock.salesDailyMetric.findMany).toHaveBeenCalled();
-    expect(prismaMock.salesDailyMetric.count).toHaveBeenCalled();
-    expect(prismaMock.order.aggregate).toHaveBeenCalled();
+    expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(1);
     expect(response.headers.get("vercel-cdn-cache-control")).toBeNull();
   });
 
@@ -92,14 +89,16 @@ describe("audit endpoint contract", () => {
     const response = await server.request("GET", `/api/test/analytics?${query}`);
     expect(response.status).toBe(400);
     expect(response.body).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
-    expect(prismaMock.salesDailyMetric.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
   });
 
   it("accepts the maximum page and page size", async () => {
     mockAnalyticsData();
     const response = await server.request("GET", "/api/test/analytics?page=10000&limit=100");
     expect(response.status).toBe(200);
-    expect(prismaMock.salesDailyMetric.findMany.mock.calls[0]?.[0]).toMatchObject({ skip: 999_900, take: 100 });
+    expect(sqlText(prismaMock.$queryRaw.mock.calls[0] ?? []).replace(/\s+/g, " ")).toContain("OFFSET ? LIMIT ?");
+    expect(prismaMock.$queryRaw.mock.calls[0]?.[0].values).toContain(999_900);
+    expect(prismaMock.$queryRaw.mock.calls[0]?.[0].values).toContain(100);
   });
 
   it.each(["orderId=not-a-uuid", `orderNumber=${"x".repeat(81)}`, "orderNumber=", "extra=1&orderNumber=OM-1"])(
@@ -197,7 +196,7 @@ describe("audit endpoint contract", () => {
 
     expect((await server.request("GET", "/api/test/analytics", { headers: cookie })).status).toBe(200);
     expect((await server.request("GET", "/api/test/kanban-status?orderNumber=OM-1", { headers: cookie })).status).toBe(200);
-    expect(prismaMock.salesDailyMetric.findMany.mock.calls[0]?.[0]).toMatchObject({ where: { ownerId: userId } });
+    expect(prismaMock.$queryRaw.mock.calls[0]?.[0].values).toContain(userId);
     expect(prismaMock.order.findFirst.mock.calls[0]?.[0]).toMatchObject({ where: { orderNumber: "OM-1", ownerId: userId } });
   });
 
@@ -205,7 +204,7 @@ describe("audit endpoint contract", () => {
     const other = "22222222-2222-4222-8222-222222222222";
     expect((await server.request("GET", `/api/test/analytics?ownerId=${other}`)).status).toBe(400);
     expect((await server.request("GET", `/api/test/kanban-status?orderNumber=OM-1&ownerId=${other}`)).status).toBe(400);
-    expect(prismaMock.salesDailyMetric.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
     expect(prismaMock.order.findFirst).not.toHaveBeenCalled();
   });
 
