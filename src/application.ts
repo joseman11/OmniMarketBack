@@ -13,9 +13,8 @@ import { testRouter } from "./routes/test.js";
 
 const helmetFn: () => RequestHandler = ((helmet as unknown as { default?: () => RequestHandler })?.default ?? (helmet as unknown as () => RequestHandler));
 
-export function createApp() {
+export function createApp(app = express()) {
   const env = getEnv();
-  const app = express();
   if (env.NODE_ENV === "production") app.set("trust proxy", 1);
 
   const allowedOrigins = new Set([

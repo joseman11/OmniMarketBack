@@ -1,7 +1,7 @@
+import express from "express";
 import { createApp } from "./application.js";
 
-// Vercel detects src/app.ts as the Express entrypoint and expects the app
-// itself as the module's default export.
-const app = createApp();
+// Vercel detects Express from imports in the entrypoint file itself.
+const app = createApp(express());
 
 export default app;
