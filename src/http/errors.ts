@@ -27,6 +27,21 @@ export function errorResponse(error: unknown): {
     };
   }
 
+  // express.json() (body-parser) marks client mistakes with a type and an exposable 4xx status.
+  const parserError = error as { type?: unknown; status?: unknown; expose?: unknown } | null;
+  if (parserError?.type === "entity.parse.failed") {
+    return { status: 400, body: { error: { code: "INVALID_JSON", message: "The request body is not valid JSON." } } };
+  }
+  if (parserError?.type === "entity.too.large") {
+    return { status: 413, body: { error: { code: "PAYLOAD_TOO_LARGE", message: "The request body exceeds the 1 MB limit." } } };
+  }
+  if (
+    parserError?.expose === true && typeof parserError.status === "number" &&
+    parserError.status >= 400 && parserError.status < 500
+  ) {
+    return { status: parserError.status, body: { error: { code: "BAD_REQUEST", message: "The request body could not be read." } } };
+  }
+
   const prismaCode = (error as { code?: unknown } | null)?.code;
   if (prismaCode === "P2002") {
     return {

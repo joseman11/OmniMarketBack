@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../db/prisma.js";
 import { productInputSchema, updateProductSchema } from "../domain/validation.js";
@@ -129,30 +130,38 @@ productsRouter.patch("/:id", async (request, response) => {
   const id = parseOrThrow(z.string().uuid(), request.params.id);
   const input = parseOrThrow(updateProductSchema, request.body);
   const ownerId = request.authUser!.id;
-  const current = await prisma.product.findFirst({ where: { id, ownerId } });
-  if (!current) throw new HttpError(404, "PRODUCT_NOT_FOUND", "Product not found.");
-  if (input.categoryId) {
-    const category = await prisma.category.findFirst({ where: { id: input.categoryId, ownerId } });
-    if (!category) throw new HttpError(400, "CATEGORY_UNAVAILABLE", "The selected category is not available.");
-    if (current.categoryId !== input.categoryId) {
-      const hasSales = await prisma.orderItem.count({ where: { productId: id } });
-      if (hasSales > 0) {
-        throw new HttpError(409, "CATEGORY_HAS_SALES", "A product with order history cannot be moved to another category.");
+  // Check and change in one transaction. FOR UPDATE conflicts with the FOR KEY SHARE lock that inserting an
+  // order item takes on its product, so a sale cannot slip in between the sales check and the category change:
+  // either the sale commits first and the check sees it, or it waits until the new category is committed.
+  const item = await prisma.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<Array<{ category_id: string }>>(Prisma.sql`
+      SELECT "category_id" FROM "products" WHERE "id" = ${id}::uuid AND "owner_id" = ${ownerId}::uuid FOR UPDATE
+    `);
+    const current = locked[0];
+    if (!current) throw new HttpError(404, "PRODUCT_NOT_FOUND", "Product not found.");
+    if (input.categoryId) {
+      const category = await tx.category.findFirst({ where: { id: input.categoryId, ownerId } });
+      if (!category) throw new HttpError(400, "CATEGORY_UNAVAILABLE", "The selected category is not available.");
+      if (current.category_id !== input.categoryId) {
+        const hasSales = await tx.orderItem.count({ where: { productId: id } });
+        if (hasSales > 0) {
+          throw new HttpError(409, "CATEGORY_HAS_SALES", "A product with order history cannot be moved to another category.");
+        }
       }
     }
-  }
-  const item = await prisma.product.update({
-    where: { id },
-    data: {
-      ...(input.sku === undefined ? {} : { sku: input.sku.toUpperCase() }),
-      ...(input.name === undefined ? {} : { name: input.name }),
-      ...(input.categoryId === undefined ? {} : { categoryId: input.categoryId }),
-      ...(input.price === undefined ? {} : { price: input.price }),
-      ...(input.cost === undefined ? {} : { cost: input.cost }),
-      ...(input.stock === undefined ? {} : { stock: input.stock }),
-      ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
-    },
-    include: { category: true },
+    return tx.product.update({
+      where: { id },
+      data: {
+        ...(input.sku === undefined ? {} : { sku: input.sku.toUpperCase() }),
+        ...(input.name === undefined ? {} : { name: input.name }),
+        ...(input.categoryId === undefined ? {} : { categoryId: input.categoryId }),
+        ...(input.price === undefined ? {} : { price: input.price }),
+        ...(input.cost === undefined ? {} : { cost: input.cost }),
+        ...(input.stock === undefined ? {} : { stock: input.stock }),
+        ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
+      },
+      include: { category: true },
+    });
   });
   response.json({ item: serializeProduct(item) });
 });

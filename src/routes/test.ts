@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { isTestTokenValid } from "./auth.js";
 import { prisma } from "../db/prisma.js";
 import { HttpError } from "../http/errors.js";
@@ -10,12 +10,16 @@ import { TEST_ADMIN_ID } from "../domain/workspace.js";
 
 export const testRouter = Router();
 
+// Audit reads stay public: anonymous callers see the synthetic fixture workspace and a signed-in account sees
+// its own workspace. The owner always comes from the session, never from a request parameter.
+const auditOwnerId = (request: Request) => request.authUser?.id ?? TEST_ADMIN_ID;
+
 testRouter.get("/analytics", async (request, response) => {
-  response.json(await loadAnalytics(request.query, TEST_ADMIN_ID));
+  response.json(await loadAnalytics(request.query, auditOwnerId(request)));
 });
 
 testRouter.get("/kanban-status", async (request, response) => {
-  response.json(await loadKanbanStatus(request.query));
+  response.json(await loadKanbanStatus(request.query, auditOwnerId(request)));
 });
 
 testRouter.post("/reset-data", async (request, response) => {

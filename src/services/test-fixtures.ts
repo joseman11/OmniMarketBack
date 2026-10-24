@@ -63,6 +63,8 @@ export async function resetTestData(database: PrismaClient): Promise<{ categorie
       select: { createdAt: true },
     });
     await tx.order.deleteMany({ where: { isTestData: true } });
+    // Stored idempotent responses would otherwise replay fixture orders that no longer exist.
+    await tx.idempotencyKey.deleteMany({ where: { ownerId: TEST_ADMIN_ID } });
     for (const order of oldTestOrders) await refreshSalesMetrics(tx, order.createdAt, TEST_ADMIN_ID);
     await tx.session.deleteMany({ where: { userId: TEST_ADMIN_ID } });
     await tx.account.deleteMany({ where: { userId: TEST_ADMIN_ID } });

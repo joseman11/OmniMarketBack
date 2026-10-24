@@ -1,8 +1,7 @@
 import { Router } from "express";
-import { z } from "zod";
 import { prisma } from "../db/prisma.js";
-import { analyticsQuerySchema } from "../domain/validation.js";
-import { averageCents, fromCents, toCents } from "../domain/money.js";
+import { analyticsQuerySchema, kanbanStatusQuerySchema } from "../domain/validation.js";
+import { aggregateToCents, averageCents, fromCents } from "../domain/money.js";
 import { HttpError } from "../http/errors.js";
 import { parseOrThrow } from "../http/validation.js";
 import { utcDayBounds } from "../services/analytics.js";
@@ -22,8 +21,24 @@ export async function loadAnalytics(input: unknown, ownerId: string) {
     status: { not: "CANCELLED" as const },
     ownerId,
     ...(Object.keys(bounds).length ? { createdAt: bounds } : {}),
-    ...(query.categoryId ? { items: { some: { product: { categoryId: query.categoryId } } } } : {}),
   };
+
+  // With a category filter the summary adds only that category's lines, exactly like the rows it summarizes:
+  // the daily metrics already hold per-category revenue, margin and order counts (an order falls on one day).
+  const summaryQuery = query.categoryId
+    ? prisma.salesDailyMetric.aggregate({
+        where: metricWhere,
+        _sum: { ordersCount: true, revenue: true, grossMargin: true },
+      }).then((result) => ({
+        orderCount: result._sum.ordersCount ?? 0,
+        revenue: result._sum.revenue,
+        margin: result._sum.grossMargin,
+      }))
+    : prisma.order.aggregate({
+        where: orderWhere,
+        _count: { _all: true },
+        _sum: { total: true, margin: true },
+      }).then((result) => ({ orderCount: result._count._all, revenue: result._sum.total, margin: result._sum.margin }));
 
   const [items, total, summary] = await Promise.all([
     prisma.salesDailyMetric.findMany({
@@ -34,19 +49,15 @@ export async function loadAnalytics(input: unknown, ownerId: string) {
       take: query.limit,
     }),
     prisma.salesDailyMetric.count({ where: metricWhere }),
-    prisma.order.aggregate({
-      where: orderWhere,
-      _count: { _all: true },
-      _sum: { total: true, margin: true },
-    }),
+    summaryQuery,
   ]);
 
-  const revenue = summary._sum.total?.toFixed(2) ?? "0.00";
-  const grossMargin = summary._sum.margin?.toFixed(2) ?? "0.00";
-  const orderCount = summary._count._all;
+  const revenue = summary.revenue?.toFixed(2) ?? "0.00";
+  const grossMargin = summary.margin?.toFixed(2) ?? "0.00";
+  const orderCount = summary.orderCount;
   const avgTicket = orderCount === 0
     ? "0.00"
-    : fromCents(averageCents(toCents(revenue), orderCount));
+    : fromCents(averageCents(aggregateToCents(revenue), orderCount));
 
   return {
     summary: { ordersCount: orderCount, revenue, avgTicket, grossMargin },
@@ -73,12 +84,7 @@ analyticsRouter.get("/", async (request, response) => {
 
 /** Audit lookup; defaults to the test administrator's workspace where the fixtures live. */
 export async function loadKanbanStatus(input: unknown, ownerId = TEST_ADMIN_ID) {
-  const query = parseOrThrow(
-    z.object({ orderId: z.string().uuid().optional(), orderNumber: z.string().min(1).max(80).optional() })
-      .strict()
-      .refine((value) => Boolean(value.orderId || value.orderNumber), { message: "Provide orderId or orderNumber." }),
-    input,
-  );
+  const query = parseOrThrow(kanbanStatusQuerySchema, input);
   const order = await prisma.order.findFirst({
     where: query.orderId
       ? { id: query.orderId, ownerId }

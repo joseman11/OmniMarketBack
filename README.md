@@ -37,11 +37,26 @@ La API usa `PORT` (3001 en `.env.example`) y el endpoint de salud es `GET /api/h
 | `PATCH /api/orders/:id/status` | Sesión | Mueve y reordena tarjetas con `expectedVersion` |
 | `PATCH /api/orders/bulk` | Sesión | Cambia el estado de hasta 100 pedidos atómicamente |
 | `GET /api/analytics?page=1&limit=50&from=&to=&categoryId=` | Sesión | Analítica paginada y filtrable |
-| `GET /api/test/analytics?page=1&limit=50` | Auditoría | Analítica paginada para evaluación |
+| `GET /api/test/analytics?page=1&limit=50` | Auditoría (pública) | Analítica paginada para evaluación |
 | `POST /api/test/reset-data` | Bearer `TEST_API_TOKEN` | Restaura datos repetibles de auditoría |
-| `GET /api/test/kanban-status?orderNumber=OM-TEST-1001` | Auditoría | Consulta estado, posición y versión persistidos |
+| `GET /api/test/kanban-status?orderNumber=OM-TEST-1001` | Auditoría (pública) | Consulta estado, posición y versión persistidos (`orderNumber` u `orderId`) |
 
 Las rutas CRUD requieren una sesión OAuth de Google o GitHub. Cada cuenta es dueña de un espacio de trabajo aislado (`owner_id`): solo ve y modifica sus propias categorías, productos, clientes, pedidos y métricas, y administra su propio catálogo. Nombres de categoría, SKU y correos de cliente son únicos por cuenta. `ADMIN_EMAILS` asigna el rol administrador de plataforma (usado por el reset de fixtures del frontend). Los fixtures de auditoría viven en el espacio del administrador de prueba; las rutas de lectura de auditoría quedan disponibles para el evaluador y la ruta destructiva de reset exige `TEST_API_TOKEN`.
+
+Alcance de los GET de auditoría (`/api/test/analytics` y `/api/test/kanban-status`): sin sesión consultan el dataset sintético del administrador de prueba (`TEST_ADMIN_ID`); con la cookie de sesión OAuth consultan el espacio de esa cuenta, de modo que el evaluador que crea y mueve un pedido en su tablero lo encuentra reutilizando la misma sesión (mismo navegador o cookie). El dueño nunca se elige por parámetro: un `ownerId` (o cualquier parámetro desconocido) devuelve 400.
+
+### Límites de peticiones
+
+Límites por IP de cliente en ventanas fijas de un minuto (`src/http/rate-limit.ts`). Responden `429 { error: { code: "RATE_LIMITED" } }` con `Retry-After`:
+
+| Política | Rutas | Límite |
+| --- | --- | --- |
+| `audit` | `/api/test/*` | 600 peticiones/min |
+| `audit-reset` | `POST /api/test/reset-data` | 30 peticiones/min |
+| `analytics` | `GET /api/analytics` | 300 peticiones/min |
+| `writes` | `POST/PATCH/PUT/DELETE` en `/api/orders`, `/api/products` y `/api/categories` | 300 peticiones/min |
+
+Los contadores viven en memoria de cada instancia de la función de Vercel: no se comparten entre instancias ni sobreviven a un arranque en frío, así que solo son una defensa básica. Una cuota real requiere un almacén compartido (por ejemplo Upstash Redis, integrado con Vercel).
 
 Los importes se calculan en centavos enteros y se guardan como `DECIMAL(12,2)`. El margen bruto es un importe monetario (`total - costo`), no un porcentaje. Las métricas diarias se reconstruyen dentro de la transacción que crea, edita, elimina o cambia el estado de un pedido. Los pedidos cancelados no cuentan en ventas.
 
@@ -49,7 +64,7 @@ Los importes se calculan en centavos enteros y se guardan como `DECIMAL(12,2)`. 
 
 | Variable | Propósito |
 | --- | --- |
-| `DATABASE_URL` | PostgreSQL de Railway o local |
+| `DATABASE_URL` | PostgreSQL de producción o local. En Vercel, la URL del pooler para la API; la directa para migraciones |
 | `API_ORIGIN` | Origen público del frontend; base de callbacks OAuth proxificados |
 | `WEB_ORIGIN` | Origen permitido para CORS y destino del login exitoso (`/dashboard`) |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Credenciales privadas de Google OAuth |
@@ -58,25 +73,33 @@ Los importes se calculan en centavos enteros y se guardan como `DECIMAL(12,2)`. 
 | `TEST_API_TOKEN` | Secreto para restablecer datos de auditoría |
 | `ALLOW_TEST_DATA_RESET` | Permite el reset en producción; solo borra filas etiquetadas como fixture y requiere `TEST_API_TOKEN` |
 | `E2E_TEST_AUTH` | Solo para pruebas; la ruta de sesión simulada requiere además `NODE_ENV=test` |
-| `PORT` | Puerto inyectado por Railway |
+| `PORT` | Puerto del servidor local (`npm run dev` / `npm start`); Vercel no lo usa |
 
-En local, el frontend corre en `http://localhost:3000` y el backend en `http://localhost:3001`; configure `API_ORIGIN` y `WEB_ORIGIN` al origen del frontend. En Railway use el dominio público del frontend para ambas variables. Next reenvía `/api/auth/*` al backend y conserva las cookies en el host del frontend.
+En local, el frontend corre en `http://localhost:3000` y el backend en `http://localhost:3001`; configure `API_ORIGIN` y `WEB_ORIGIN` al origen del frontend. En Vercel use el dominio público del frontend para ambas variables. Next reenvía `/api/auth/*` al backend y conserva las cookies en el host del frontend.
 
 Los callbacks OAuth deben registrarse en Google/GitHub con el origen del frontend:
 
 - Google: `${API_ORIGIN}/api/auth/google/callback`
 - GitHub: `${API_ORIGIN}/api/auth/github/callback`
 
-No guardar secretos en GitHub ni en este repositorio; configurarlos como variables privadas del servicio Railway.
+No guardar secretos en GitHub ni en este repositorio; configurarlos como variables de entorno del proyecto en Vercel.
 
 ## Pruebas y CI/CD
 
 `npm test` ejecuta pruebas unitarias para cálculos, validación Zod, paginación, filtros y formato monetario. `npm run test:e2e` ejecuta tres flujos API contra PostgreSQL: acceso autenticado, creación de producto/pedido y movimiento Kanban con conflicto por versión obsoleta.
 
-El workflow ejecutable está en `.github/workflows/ci.yml`; corre en `push` a `main` y pull requests. En Railway se debe conectar este repositorio, seleccionar `main` y activar **Wait for CI**. Railway autodesplegará solo tras terminar correctamente el workflow. Los E2E de navegador para rutas privadas, tabla, arrastre visual, Skeletons y Toasts pertenecen a la fase frontend.
+El workflow ejecutable está en `.github/workflows/ci.yml`; corre en `push` a `main` y `dev` y en pull requests. Para que un fallo impida el despliegue: en GitHub, proteger `main` exigiendo el check `OmniMarket Backend CI / backend`; en Vercel, condicionar la promoción a producción a que pasen los checks de GitHub. Los E2E de navegador para rutas privadas, tabla, arrastre visual, Skeletons y Toasts pertenecen a la fase frontend.
 
-## Railway
+## Vercel
 
-`.railway/railway.ts` declara el backend, PostgreSQL, migración y fixtures de auditoría pre-deploy, variables privadas preservadas y `/api/health`. La configuración no ha sido aplicada a una cuenta de Railway. Para un proyecto nuevo, crear/aplicar el proyecto desde el CLI de Railway, conectar el repositorio GitHub del backend al servicio y completar las variables privadas y el dominio público. El archivo se omite intencionalmente del source de GitHub porque el propietario y repositorio remoto aún no están configurados en este checkout.
+El backend se despliega como función serverless de Vercel con el preset de Express: `src/app.ts` importa `express` y exporta por defecto la app creada con `createApp` (`src/application.ts`). No hay `vercel.json`, así que todas las rutas del despliegue del backend, incluidas `/api/test/*`, llegan a esa función.
 
-La URL HTTPS, OAuth en vivo, SLA menor a 300 ms en Railway y aprobación de producción siguen sin verificarse hasta que el servicio esté provisionado y probado con datos/credenciales reales.
+- **Frontend/proxy**: el evaluador debe poder llamar `/api/test/analytics`, `/api/test/reset-data` y `/api/test/kanban-status` en la URL entregada. Si esa URL es la del frontend Next.js, su reescritura hacia el backend debe incluir `/api/test/:path*` (además de `/api/auth/:path*` y el resto de `/api/*`) y reenviar las cabeceras `Authorization` y `Cookie`.
+- **Migraciones**: `vercel-build` ejecuta `prisma migrate deploy` en builds de producción. Para migraciones nuevas, aplicarlas manualmente antes de desplegar el código que las usa, con la URL directa (no la del pooler) si el proveedor ofrece ambas: `DATABASE_URL="<url directa de producción>" npx prisma migrate deploy`.
+- **Seed**: Vercel no ejecuta el seed. Los fixtures de auditoría se crean con `POST /api/test/reset-data` (Bearer `TEST_API_TOKEN`, `ALLOW_TEST_DATA_RESET=true`) o con `npm run db:seed` manual contra la base.
+- **Logs**: cada petición escribe una línea JSON (`http.request.completed`, con `request_id`, ruta normalizada, estado y `duration_ms`); los 500 escriben `http.request.failed` en stderr con el error saneado. Ambos aparecen en los Runtime Logs de Vercel. La respuesta incluye `X-Request-Id` para cruzarla con los logs.
+- **Idempotencia**: `POST /api/orders` acepta la cabecera opcional `Idempotency-Key` (1-255 caracteres ASCII visibles). La misma clave con el mismo contenido devuelve la respuesta original (`Idempotent-Replayed: true`); con otro contenido, `409 IDEMPOTENCY_KEY_REUSED`.
+
+## Estado de verificación
+
+La URL HTTPS, OAuth en vivo, SLA menor a 300 ms en Vercel y aprobación de producción siguen sin verificarse hasta probar el despliegue con datos y credenciales reales.

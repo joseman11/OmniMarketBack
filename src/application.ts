@@ -5,6 +5,9 @@ import { attachSessionUser, requireAuth } from "./auth/middleware.js";
 import { getEnv } from "./config/env.js";
 import { prisma } from "./db/prisma.js";
 import { errorResponse, HttpError } from "./http/errors.js";
+import { describeError, logEvent, normalizeRoute } from "./http/logger.js";
+import { createRateLimiter, RATE_LIMITS } from "./http/rate-limit.js";
+import { assignRequestId, logRequests } from "./http/request-context.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { authRouter } from "./routes/auth.js";
 import { ordersRouter } from "./routes/orders.js";
@@ -21,6 +24,8 @@ export function createApp(app = express()) {
     env.WEB_ORIGIN,
     ...env.CORS_ALLOWED_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean),
   ]);
+  app.use(assignRequestId);
+  app.use(logRequests);
   app.use(helmetFn());
   app.use(cors({
     credentials: true,
@@ -37,24 +42,30 @@ export function createApp(app = express()) {
     response.status(200).json({ status: "ok", service: "omnimarket-api" });
   });
 
+  // Per-instance limits (see RATE_LIMITS); each app gets its own counters.
+  const writes = createRateLimiter(RATE_LIMITS.writes);
   app.use("/api/auth", authRouter);
-  app.use("/api/analytics", requireAuth, analyticsRouter);
-  app.use("/api/categories", requireAuth, categoriesRouter);
-  app.use("/api/products", requireAuth, productsRouter);
-  app.use("/api/orders", requireAuth, ordersRouter);
-  app.use("/api/test", testRouter);
+  app.use("/api/analytics", createRateLimiter(RATE_LIMITS.analytics), requireAuth, analyticsRouter);
+  app.use("/api/categories", writes, requireAuth, categoriesRouter);
+  app.use("/api/products", writes, requireAuth, productsRouter);
+  app.use("/api/orders", writes, requireAuth, ordersRouter);
+  app.use("/api/test/reset-data", createRateLimiter(RATE_LIMITS.auditReset));
+  app.use("/api/test", createRateLimiter(RATE_LIMITS.audit), testRouter);
 
   app.use((_request, _response, next) => next(new HttpError(404, "NOT_FOUND", "Route not found.")));
 
   const handleError: ErrorRequestHandler = (error, request, response, _next) => {
     const result = errorResponse(error);
-    // Se registra también en producción (logs de Vercel); al cliente solo llega el mensaje genérico.
+    // Se registra también en producción (Runtime Logs de Vercel); al cliente solo llega el mensaje genérico.
     if (result.status === 500) {
-      const code = (error as { code?: unknown } | null)?.code;
-      console.error(
-        `[INTERNAL_ERROR] ${request.method} ${request.path}${typeof code === "string" ? ` (code ${code})` : ""}`,
-        error instanceof Error ? (error.stack ?? error.message) : error,
-      );
+      logEvent("error", "http.request.failed", {
+        request_id: response.getHeader("X-Request-Id"),
+        method: request.method,
+        route: normalizeRoute(request.originalUrl),
+        status_code: 500,
+        error_code: result.body.error.code,
+        ...describeError(error),
+      });
     }
     response.status(result.status).json(result.body);
   };

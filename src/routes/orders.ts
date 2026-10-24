@@ -2,7 +2,9 @@ import { randomBytes } from "node:crypto";
 import { Router } from "express";
 import { Prisma, type OrderStatus } from "@prisma/client";
 import { z } from "zod";
+import { lockBoardColumns } from "../db/locks.js";
 import { prisma } from "../db/prisma.js";
+import { withTransactionRetry } from "../db/transaction.js";
 import { calculateOrderAmounts } from "../domain/money.js";
 import {
   bulkOrderSchema,
@@ -13,7 +15,8 @@ import {
 } from "../domain/validation.js";
 import { HttpError } from "../http/errors.js";
 import { parseOrThrow } from "../http/validation.js";
-import { refreshSalesMetrics } from "../services/analytics.js";
+import { affectsSalesMetrics, orderCategoryIds, refreshSalesMetrics } from "../services/analytics.js";
+import { commandHash, findIdempotentReplay, parseIdempotencyKey, saveIdempotentResponse } from "../services/idempotency.js";
 import { isTestWorkspace } from "../domain/workspace.js";
 import { serializeOrder } from "../domain/serializers.js";
 
@@ -44,6 +47,7 @@ async function resolvePricedItems(
     const product = byId.get(item.productId)!;
     return {
       productId: product.id,
+      categoryId: product.categoryId,
       quantity: item.quantity,
       unitPrice: product.price.toFixed(2),
       unitCost: product.cost.toFixed(2),
@@ -93,7 +97,18 @@ ordersRouter.post("/", async (request, response) => {
   const creatorId = request.authUser!.id;
   const ownerId = creatorId;
   const isTestData = isTestWorkspace(ownerId);
-  const item = await prisma.$transaction(async (tx) => {
+  const idempotencyKey = parseIdempotencyKey(request.header("idempotency-key"));
+  const idempotency = idempotencyKey === undefined
+    ? undefined
+    : {
+        scope: { ownerId, operation: "orders.create", key: idempotencyKey },
+        hash: commandHash({ ...input, customer: { ...input.customer, email: input.customer.email.toLowerCase() } }),
+      };
+  const result = await prisma.$transaction(async (tx) => {
+    if (idempotency) {
+      const replay = await findIdempotentReplay(tx, idempotency.scope, idempotency.hash);
+      if (replay) return { ...replay, replayed: true };
+    }
     const pricedItems = await resolvePricedItems(tx, input.items, ownerId);
     const amounts = calculateOrderAmounts(pricedItems);
     const email = input.customer.email.toLowerCase();
@@ -115,7 +130,10 @@ ordersRouter.post("/", async (request, response) => {
             ...(input.customer.city === undefined ? {} : { city: input.customer.city }),
           },
         });
-    const position = await tx.order.count({ where: { status: "PENDING", ownerId } });
+    // MAX+1 under the column lock: gaps left by deletions never yield a duplicate, and concurrent creations queue.
+    await lockBoardColumns(tx, ownerId, ["PENDING"]);
+    const last = await tx.order.aggregate({ where: { status: "PENDING", ownerId }, _max: { position: true } });
+    const position = (last._max.position ?? -1) + 1;
     const order = await tx.order.create({
       data: {
         orderNumber: makeOrderNumber(),
@@ -138,23 +156,28 @@ ordersRouter.post("/", async (request, response) => {
       },
       include: orderInclude,
     });
-    await refreshSalesMetrics(tx, order.createdAt, ownerId);
-    return order;
+    await refreshSalesMetrics(tx, order.createdAt, ownerId, pricedItems.map((priced) => priced.categoryId));
+    const created = { status: 201, body: { item: serializeOrder(order) } };
+    if (!idempotency) return { ...created, replayed: false };
+    return { ...(await saveIdempotentResponse(tx, idempotency.scope, idempotency.hash, created)), replayed: false };
   });
-  response.status(201).json({ item: serializeOrder(item) });
+  if (result.replayed) response.setHeader("Idempotent-Replayed", "true");
+  response.status(result.status).json(result.body);
 });
 
 ordersRouter.patch("/bulk", async (request, response) => {
   const input = parseOrThrow(bulkOrderSchema, request.body);
   const changedBy = request.authUser!.id;
   const ownerId = changedBy;
-  const result = await prisma.$transaction(async (tx) => {
+  const result = await withTransactionRetry("orders.bulk", () => prisma.$transaction(async (tx) => {
     const orders = await tx.order.findMany({ where: { id: { in: input.ids }, ownerId } });
     if (orders.length !== input.ids.length) {
       throw new HttpError(404, "ORDER_NOT_FOUND", "One or more orders do not exist.");
     }
     const changed = orders.filter((order) => order.status !== input.status);
     if (changed.length === 0) return { updatedCount: 0, ids: [] as string[] };
+    // Same lock order as single moves; rows that changed meanwhile fail the version guard below (409).
+    await lockBoardColumns(tx, ownerId, [input.status, ...changed.map((order) => order.status)]);
 
     const changedIds = new Set(changed.map((order) => order.id));
     const sourceStatuses = [...new Set(changed.map((order) => order.status))];
@@ -197,15 +220,21 @@ ordersRouter.patch("/bulk", async (request, response) => {
         throw new HttpError(409, "VERSION_CONFLICT", "An order changed while this bulk update was being applied.");
       }
     }
+    const metricOrders = new Map<string, string[]>();
     for (const order of changedInRequestOrder) {
       await tx.orderStatusHistory.create({
         data: { orderId: order.id, changedBy, fromStatus: order.status, toStatus: input.status },
       });
-      metricDays.set(order.createdAt.toISOString().slice(0, 10), order.createdAt);
+      if (!affectsSalesMetrics(order.status, input.status)) continue;
+      const dayKey = order.createdAt.toISOString().slice(0, 10);
+      metricDays.set(dayKey, order.createdAt);
+      metricOrders.set(dayKey, [...(metricOrders.get(dayKey) ?? []), order.id]);
     }
-    for (const date of metricDays.values()) await refreshSalesMetrics(tx, date, ownerId);
+    for (const [dayKey, date] of [...metricDays.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      await refreshSalesMetrics(tx, date, ownerId, await orderCategoryIds(tx, metricOrders.get(dayKey)!));
+    }
     return { updatedCount: changedInRequestOrder.length, ids: changedInRequestOrder.map((order) => order.id) };
-  });
+  }));
   response.json(result);
 });
 
@@ -214,36 +243,45 @@ ordersRouter.patch("/:id/status", async (request, response) => {
   const input = parseOrThrow(moveOrderSchema, request.body);
   const changedBy = request.authUser!.id;
   const ownerId = changedBy;
-  const item = await prisma.$transaction(async (tx) => {
+  const item = await withTransactionRetry("orders.move", () => prisma.$transaction(async (tx) => {
+    const found = await tx.order.findFirst({ where: { id, ownerId }, select: { status: true } });
+    if (!found) throw new HttpError(404, "ORDER_NOT_FOUND", "Order not found.");
+    // Column locks in a fixed order, then a fresh read: a concurrent move of this card shows up as a new version.
+    await lockBoardColumns(tx, ownerId, [found.status, input.status]);
     const existing = await tx.order.findFirst({ where: { id, ownerId } });
     if (!existing) throw new HttpError(404, "ORDER_NOT_FOUND", "Order not found.");
     if (existing.version !== input.expectedVersion) {
       throw new HttpError(409, "VERSION_CONFLICT", "This order was updated by another request; reload and retry.");
     }
 
+    const cardSelect = { id: true, position: true, version: true } as const;
     const sourceOrders = await tx.order.findMany({
       where: { status: existing.status, ownerId },
+      select: cardSelect,
       orderBy: [{ position: "asc" }, { id: "asc" }],
     });
     const targetOrders = input.status === existing.status
       ? sourceOrders
       : await tx.order.findMany({
           where: { status: input.status, ownerId },
+          select: cardSelect,
           orderBy: [{ position: "asc" }, { id: "asc" }],
         });
 
+    const moved = { id: existing.id, position: existing.position, version: existing.version };
     const sourceAfter = sourceOrders.filter((order) => order.id !== id);
     const targetAfter = input.status === existing.status ? sourceAfter : [...targetOrders];
     const insertionIndex = Math.min(input.position, targetAfter.length);
-    targetAfter.splice(insertionIndex, 0, existing);
+    targetAfter.splice(insertionIndex, 0, moved);
 
-    const positionUpdates = new Map<string, { order: typeof existing; status: OrderStatus; position: number }>();
+    // Only cards whose position (or, for the moved card, status) changes are written.
+    const positionUpdates = new Map<string, { order: typeof moved; status: OrderStatus; position: number }>();
     for (const [position, order] of sourceAfter.entries()) {
       if (order.position !== position) positionUpdates.set(order.id, { order, status: existing.status, position });
     }
     for (const [position, order] of targetAfter.entries()) {
-      if (order.id === id || order.position !== position || input.status !== existing.status) {
-        positionUpdates.set(order.id, { order: order.id === id ? existing : order, status: input.status, position });
+      if (order.id === id || order.position !== position) {
+        positionUpdates.set(order.id, { order, status: input.status, position });
       }
     }
 
@@ -261,9 +299,11 @@ ordersRouter.patch("/:id/status", async (request, response) => {
         data: { orderId: id, changedBy, fromStatus: existing.status, toStatus: input.status },
       });
     }
-    await refreshSalesMetrics(tx, existing.createdAt, ownerId);
+    if (affectsSalesMetrics(existing.status, input.status)) {
+      await refreshSalesMetrics(tx, existing.createdAt, ownerId, await orderCategoryIds(tx, [id]));
+    }
     return tx.order.findUniqueOrThrow({ where: { id }, include: orderInclude });
-  });
+  }));
   response.json({ item: serializeOrder(item) });
 });
 
@@ -290,6 +330,7 @@ ordersRouter.patch("/:id", async (request, response) => {
     if (changed.count !== 1) {
       throw new HttpError(409, "VERSION_CONFLICT", "This order was updated by another request; reload and retry.");
     }
+    const previousCategories = await orderCategoryIds(tx, [id]);
     await tx.orderItem.deleteMany({ where: { orderId: id } });
     await tx.orderItem.createMany({
       data: pricedItems.map((priced) => ({
@@ -300,7 +341,10 @@ ordersRouter.patch("/:id", async (request, response) => {
         unitCost: priced.unitCost,
       })),
     });
-    await refreshSalesMetrics(tx, existing.createdAt, ownerId);
+    await refreshSalesMetrics(tx, existing.createdAt, ownerId, [
+      ...previousCategories,
+      ...pricedItems.map((priced) => priced.categoryId),
+    ]);
     return tx.order.findUniqueOrThrow({ where: { id }, include: orderInclude });
   });
   response.json({ item: serializeOrder(item) });
@@ -312,8 +356,9 @@ ordersRouter.delete("/:id", async (request, response) => {
   await prisma.$transaction(async (tx) => {
     const order = await tx.order.findFirst({ where: { id, ownerId } });
     if (!order) throw new HttpError(404, "ORDER_NOT_FOUND", "Order not found.");
+    const categories = await orderCategoryIds(tx, [id]);
     await tx.order.delete({ where: { id } });
-    await refreshSalesMetrics(tx, order.createdAt, ownerId);
+    await refreshSalesMetrics(tx, order.createdAt, ownerId, categories);
   });
   response.status(204).end();
 });

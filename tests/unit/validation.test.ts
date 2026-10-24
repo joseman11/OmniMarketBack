@@ -146,3 +146,28 @@ describe("input schemas and filters", () => {
     }).success).toBe(false);
   });
 });
+
+describe("oversized collections", () => {
+  const productId = "00000000-0000-4000-8000-000000000001";
+
+  it("rejects an items array above 100 with a single issue, without validating each element", () => {
+    const items = Array.from({ length: 50_000 }, () => ({ productId: "not-a-uuid", quantity: -1, extra: true }));
+    const result = createOrderSchema.safeParse({ customer: { name: "Ada", email: "ada@example.test" }, items });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues).toHaveLength(1);
+    expect(result.error?.issues[0]).toMatchObject({ code: "too_big", path: ["items"] });
+  });
+
+  it("still validates every element of an array within the limit", () => {
+    const result = updateOrderSchema.safeParse({ expectedVersion: 1, items: [{ productId, quantity: 0 }] });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.path).toEqual(["items", 0, "quantity"]);
+  });
+
+  it("rejects more than 100 bulk IDs with a single issue", () => {
+    const result = bulkOrderSchema.safeParse({ ids: Array.from({ length: 5_000 }, () => "bad"), status: "SHIPPED" });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.filter((issue) => issue.code === "too_big")).toHaveLength(1);
+    expect(result.error?.issues.some((issue) => issue.code === "invalid_string")).toBe(false);
+  });
+});

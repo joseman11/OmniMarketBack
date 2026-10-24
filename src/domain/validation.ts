@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z, type ZodTypeAny } from "zod";
 import { isMoneyInput } from "./money.js";
 
 export const orderStatusSchema = z.enum([
@@ -13,6 +13,14 @@ export const moneySchema = z.union([z.string(), z.number()]).refine(isMoneyInput
   message: "Enter a non-negative amount with up to two decimal places.",
 });
 
+/**
+ * Array whose length is checked before any element schema runs: an oversized array yields a single issue
+ * instead of one or more issues per element (zod keeps validating every element after .max() fails).
+ */
+export function boundedArray<T extends ZodTypeAny>(element: T, min: number, max: number) {
+  return z.array(z.unknown()).min(min).max(max).pipe(z.array(element));
+}
+
 export const itemInputSchema = z.object({
   productId: z.string().uuid(),
   quantity: z.number().int().min(1).max(1_000_000),
@@ -24,7 +32,7 @@ export const createOrderSchema = z.object({
     email: z.string().trim().email().max(254),
     city: z.string().trim().max(120).optional(),
   }).strict(),
-  items: z.array(itemInputSchema).min(1).max(100),
+  items: boundedArray(itemInputSchema, 1, 100),
 }).strict();
 
 export const orderListQuerySchema = z.object({
@@ -39,9 +47,13 @@ const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => 
   return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 }, { message: "Enter a valid calendar date in YYYY-MM-DD format." });
 
+/** Explicit pagination caps: a page beyond 10 000 (1 000 000 rows at the largest page size) is rejected. */
+export const MAX_PAGE = 10_000;
+export const MAX_PAGE_SIZE = 100;
+
 export const analyticsQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(50),
+  page: z.coerce.number().int().min(1).max(MAX_PAGE).default(1),
+  limit: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(50),
   from: isoDateSchema.optional(),
   to: isoDateSchema.optional(),
   categoryId: z.string().uuid().optional(),
@@ -49,6 +61,11 @@ export const analyticsQuerySchema = z.object({
   message: "The from date must be on or before the to date.",
   path: ["to"],
 });
+
+export const kanbanStatusQuerySchema = z.object({
+  orderId: z.string().uuid().optional(),
+  orderNumber: z.string().min(1).max(80).optional(),
+}).strict().refine((value) => Boolean(value.orderId || value.orderNumber), { message: "Provide orderId or orderNumber." });
 
 export const productInputSchema = z.object({
   categoryId: z.string().uuid(),
@@ -72,7 +89,7 @@ export const moveOrderSchema = z.object({
 }).strict();
 
 export const bulkOrderSchema = z.object({
-  ids: z.array(z.string().uuid()).min(1).max(100),
+  ids: boundedArray(z.string().uuid(), 1, 100),
   status: orderStatusSchema,
 }).strict().refine(({ ids }) => new Set(ids).size === ids.length, {
   message: "Order IDs must be unique.",
@@ -80,7 +97,7 @@ export const bulkOrderSchema = z.object({
 });
 
 export const updateOrderSchema = z.object({
-  items: z.array(itemInputSchema).min(1).max(100),
+  items: boundedArray(itemInputSchema, 1, 100),
   expectedVersion: z.number().int().min(1),
 }).strict();
 

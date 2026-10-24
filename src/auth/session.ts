@@ -29,6 +29,11 @@ export async function deleteSession(token: string | undefined, response: Respons
   clearCookie(response, SESSION_COOKIE);
 }
 
+/** Ends a session server-side without touching cookies (used when a new session cookie replaces it). */
+export async function revokeSession(token: string | undefined): Promise<void> {
+  if (token) await prisma.session.deleteMany({ where: { sessionToken: hashSessionToken(token) } });
+}
+
 export function publicUser(user: Pick<User, "id" | "email" | "name" | "image" | "role">) {
   return {
     id: user.id,
