@@ -114,6 +114,7 @@ async function exchangeCode(provider: Provider, code: string, verifier: string):
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: new URLSearchParams({
+      grant_type: "authorization_code",
       client_id: credentials.id,
       client_secret: credentials.secret,
       code,

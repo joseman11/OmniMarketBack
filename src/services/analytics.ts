@@ -3,9 +3,13 @@ import type { Prisma as PrismaTypes } from "@prisma/client";
 
 type Transaction = PrismaTypes.TransactionClient;
 
-/** Rebuild one UTC day from order item snapshots so reporting stays consistent. */
+/**
+ * Rebuild one UTC day from order item snapshots so reporting stays consistent.
+ * Prisma stores `created_at` as a UTC `timestamp without time zone`, and the day is passed as a
+ * `YYYY-MM-DD` literal, so no cast here depends on the database session's TimeZone.
+ */
 export async function refreshSalesMetrics(tx: Transaction, date: Date, isTestData = false): Promise<void> {
-  const day = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const day = date.toISOString().slice(0, 10);
   await tx.$executeRaw(Prisma.sql`
     DELETE FROM "sales_daily_metrics"
     WHERE "day" = ${day}::date AND "is_test_data" = ${isTestData}
@@ -13,7 +17,7 @@ export async function refreshSalesMetrics(tx: Transaction, date: Date, isTestDat
   await tx.$executeRaw(Prisma.sql`
     WITH per_order_category AS (
       SELECT
-        (o."created_at" AT TIME ZONE 'UTC')::date AS "day",
+        ${day}::date AS "day",
         p."category_id",
         o."id" AS "order_id",
         SUM(oi."quantity" * oi."unit_price") AS "revenue",
@@ -21,10 +25,11 @@ export async function refreshSalesMetrics(tx: Transaction, date: Date, isTestDat
       FROM "orders" o
       JOIN "order_items" oi ON oi."order_id" = o."id"
       JOIN "products" p ON p."id" = oi."product_id"
-      WHERE (o."created_at" AT TIME ZONE 'UTC')::date = ${day}::date
+      WHERE o."created_at" >= ${day}::date::timestamp
+        AND o."created_at" < (${day}::date + 1)::timestamp
         AND o."is_test_data" = ${isTestData}
         AND o."status" <> 'CANCELLED'
-      GROUP BY (o."created_at" AT TIME ZONE 'UTC')::date, p."category_id", o."id"
+      GROUP BY p."category_id", o."id"
     )
     INSERT INTO "sales_daily_metrics"
       ("day", "category_id", "is_test_data", "orders_count", "revenue", "avg_ticket", "gross_margin")
