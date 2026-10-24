@@ -82,7 +82,7 @@ export async function loadKanbanStatus(input: unknown, ownerId = TEST_ADMIN_ID) 
   const order = await prisma.order.findFirst({
     where: query.orderId
       ? { id: query.orderId, ownerId }
-      : { orderNumber: query.orderNumber, ownerId },
+      : { orderNumber: query.orderNumber!, ownerId },
     select: { id: true, orderNumber: true, status: true, position: true, version: true, updatedAt: true },
   });
   if (!order) throw new HttpError(404, "ORDER_NOT_FOUND", "Order not found.");

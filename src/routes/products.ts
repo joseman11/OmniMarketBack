@@ -48,7 +48,13 @@ categoriesRouter.patch("/:id", async (request, response) => {
   const input = parseOrThrow(categoryInputSchema.partial().refine((value) => Object.keys(value).length > 0), request.body);
   const existing = await prisma.category.findFirst({ where: { id, ownerId: request.authUser!.id } });
   if (!existing) throw new HttpError(404, "CATEGORY_NOT_FOUND", "Category not found.");
-  const category = await prisma.category.update({ where: { id }, data: input });
+  const category = await prisma.category.update({
+    where: { id },
+    data: {
+      ...(input.name === undefined ? {} : { name: input.name }),
+      ...(input.slug === undefined ? {} : { slug: input.slug }),
+    },
+  });
   response.json({ item: category });
 });
 
@@ -137,7 +143,15 @@ productsRouter.patch("/:id", async (request, response) => {
   }
   const item = await prisma.product.update({
     where: { id },
-    data: { ...input, ...(input.sku ? { sku: input.sku.toUpperCase() } : {}) },
+    data: {
+      ...(input.sku === undefined ? {} : { sku: input.sku.toUpperCase() }),
+      ...(input.name === undefined ? {} : { name: input.name }),
+      ...(input.categoryId === undefined ? {} : { categoryId: input.categoryId }),
+      ...(input.price === undefined ? {} : { price: input.price }),
+      ...(input.cost === undefined ? {} : { cost: input.cost }),
+      ...(input.stock === undefined ? {} : { stock: input.stock }),
+      ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
+    },
     include: { category: true },
   });
   response.json({ item: serializeProduct(item) });
