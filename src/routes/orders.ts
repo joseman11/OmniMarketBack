@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { Router } from "express";
 import { Prisma, type OrderStatus } from "@prisma/client";
 import { z } from "zod";
+import { lockBoardColumns } from "../db/locks.js";
 import { prisma } from "../db/prisma.js";
 import { calculateOrderAmounts } from "../domain/money.js";
 import {
@@ -115,7 +116,10 @@ ordersRouter.post("/", async (request, response) => {
             ...(input.customer.city === undefined ? {} : { city: input.customer.city }),
           },
         });
-    const position = await tx.order.count({ where: { status: "PENDING", ownerId } });
+    // MAX+1 under the column lock: gaps left by deletions never yield a duplicate, and concurrent creations queue.
+    await lockBoardColumns(tx, ownerId, ["PENDING"]);
+    const last = await tx.order.aggregate({ where: { status: "PENDING", ownerId }, _max: { position: true } });
+    const position = (last._max.position ?? -1) + 1;
     const order = await tx.order.create({
       data: {
         orderNumber: makeOrderNumber(),
