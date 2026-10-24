@@ -1,0 +1,46 @@
+{
+  "name": "omnimarket-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OmniMarket Operations Hub API",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "prisma generate && tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.0",
+    "cors": "^2.8.5",
+    "dotenv": "^18.0.4",
+    "express": "^5.1.0",
+    "helmet": "^8.1.0",
+    "prisma": "^6.19.0",
+    "zod": "^3.25.76",
+    "tsx": "^4.20.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/node": "^22.15.30",
+    "eslint": "^9.35.0",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.44.0",
+    "vitest": "^3.2.4"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  }
+}

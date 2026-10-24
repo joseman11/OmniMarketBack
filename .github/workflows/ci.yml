@@ -1,0 +1,72 @@
+name: OmniMarket Backend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: omnimarket_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d omnimarket_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NODE_ENV: test
+      PORT: "3001"
+      DATABASE_URL: postgresql://test:test@localhost:5432/omnimarket_test?schema=public
+      API_ORIGIN: http://127.0.0.1:3001
+      WEB_ORIGIN: http://127.0.0.1:3000
+      TEST_API_TOKEN: ci-only-token-8d3819c9-5c63-4d5d-a329-a3886b8f018c
+      E2E_TEST_AUTH: "true"
+    steps:
+      - name: Check out backend
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Apply schema migrations
+        run: npm run db:migrate
+
+      - name: Seed repeatable E2E data
+        run: npm run db:seed
+
+      - name: Lint and typecheck
+        run: |
+          npm run lint
+          npm run typecheck
+
+      - name: Run unit and integration tests
+        run: npm test
+
+      - name: Build API
+        run: npm run build
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run backend E2E flows
+        run: npm run test:e2e

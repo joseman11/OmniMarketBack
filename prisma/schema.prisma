@@ -1,0 +1,206 @@
+// Canonical persistence model copied from doc/omnimarket-schema.prisma.
+// Intentional clarifications: OAuth access tokens are not stored; nullable fields
+// and order creation timestamps are reflected in the ER diagrams/report.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OPERATOR
+  ADMIN
+}
+
+enum OrderStatus {
+  PENDING
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+model User {
+  id            String    @id @default(uuid()) @db.Uuid
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime? @map("email_verified")
+  image         String?
+  role          Role      @default(OPERATOR)
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  accounts Account[]
+  sessions Session[]
+  orders   Order[]
+  history  OrderStatusHistory[]
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(uuid()) @db.Uuid
+  userId            String  @map("user_id") @db.Uuid
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(uuid()) @db.Uuid
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id") @db.Uuid
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+model Customer {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  email     String   @unique
+  city      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  isTestData Boolean  @default(false) @map("is_test_data")
+
+  orders Order[]
+
+  @@map("customers")
+  @@index([isTestData])
+}
+
+model Category {
+  id   String @id @default(uuid()) @db.Uuid
+  name String @unique
+  slug String @unique
+  isTestData Boolean @default(false) @map("is_test_data")
+
+  products Product[]
+  metrics  SalesDailyMetric[]
+
+  @@map("categories")
+  @@index([isTestData])
+}
+
+model Product {
+  id         String  @id @default(uuid()) @db.Uuid
+  categoryId String  @map("category_id") @db.Uuid
+  sku        String  @unique
+  name       String
+  price      Decimal @db.Decimal(12, 2)
+  cost       Decimal @db.Decimal(12, 2)
+  stock      Int     @default(0)
+  isActive   Boolean @default(true) @map("is_active")
+  isTestData Boolean @default(false) @map("is_test_data")
+
+  category Category    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  items    OrderItem[]
+
+  @@index([categoryId])
+  @@index([isTestData, categoryId])
+  @@index([isTestData])
+  @@map("products")
+}
+
+model Order {
+  id          String      @id @default(uuid()) @db.Uuid
+  orderNumber String      @unique @map("order_number")
+  customerId  String      @map("customer_id") @db.Uuid
+  createdBy   String?     @map("created_by") @db.Uuid
+  status      OrderStatus @default(PENDING)
+  position    Int         @default(0)
+  version     Int         @default(1)
+  total       Decimal     @db.Decimal(12, 2)
+  margin      Decimal     @db.Decimal(12, 2)
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+  isTestData  Boolean     @default(false) @map("is_test_data")
+
+  customer Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  creator  User?                @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+  items    OrderItem[]
+  history  OrderStatusHistory[]
+
+  @@index([customerId])
+  @@index([status, position])
+  @@index([createdAt])
+  @@index([isTestData])
+  @@index([isTestData, status, position])
+  @@index([isTestData, createdAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String  @id @default(uuid()) @db.Uuid
+  orderId   String  @map("order_id") @db.Uuid
+  productId String  @map("product_id") @db.Uuid
+  quantity  Int
+  unitPrice Decimal @map("unit_price") @db.Decimal(12, 2)
+  unitCost  Decimal @map("unit_cost") @db.Decimal(12, 2)
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("order_items")
+}
+
+model OrderStatusHistory {
+  id         String       @id @default(uuid()) @db.Uuid
+  orderId    String       @map("order_id") @db.Uuid
+  changedBy  String?      @map("changed_by") @db.Uuid
+  fromStatus OrderStatus? @map("from_status")
+  toStatus   OrderStatus  @map("to_status")
+  changedAt  DateTime     @default(now()) @map("changed_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user  User? @relation(fields: [changedBy], references: [id], onDelete: SetNull)
+
+  @@index([orderId, changedAt])
+  @@map("order_status_history")
+}
+
+model SalesDailyMetric {
+  day         DateTime @db.Date
+  categoryId  String   @map("category_id") @db.Uuid
+  isTestData  Boolean  @default(false) @map("is_test_data")
+  ordersCount Int      @map("orders_count")
+  revenue     Decimal  @db.Decimal(14, 2)
+  avgTicket   Decimal  @map("avg_ticket") @db.Decimal(12, 2)
+  grossMargin Decimal  @map("gross_margin") @db.Decimal(14, 2)
+
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([day, categoryId, isTestData])
+  @@index([categoryId])
+  @@index([isTestData, day])
+  @@map("sales_daily_metrics")
+}

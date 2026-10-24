@@ -1,0 +1,156 @@
+import { Router } from "express";
+import { z } from "zod";
+import { requireAdmin } from "../auth/middleware.js";
+import { prisma } from "../db/prisma.js";
+import { productInputSchema, updateProductSchema } from "../domain/validation.js";
+import { HttpError } from "../http/errors.js";
+import { parseOrThrow } from "../http/validation.js";
+import { TEST_ADMIN_ID } from "../services/test-fixtures.js";
+import { serializeProduct } from "../domain/serializers.js";
+
+export const productsRouter = Router();
+export const categoriesRouter = Router();
+
+const productListQuery = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  categoryId: z.string().uuid().optional(),
+  search: z.string().trim().max(120).optional(),
+  active: z.enum(["true", "false"]).optional(),
+}).strict();
+
+const categoryInputSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  slug: z.string().trim().min(1).max(120).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+}).strict();
+
+categoriesRouter.get("/", async (request, response) => {
+  const categories = await prisma.category.findMany({
+    where: { isTestData: request.authUser?.id === TEST_ADMIN_ID },
+    orderBy: { name: "asc" },
+    include: { _count: { select: { products: true } } },
+  });
+  response.json({ items: categories });
+});
+
+categoriesRouter.post("/", requireAdmin, async (request, response) => {
+  const input = parseOrThrow(categoryInputSchema, request.body);
+  const category = await prisma.category.create({
+    data: { ...input, isTestData: request.authUser?.id === TEST_ADMIN_ID },
+  });
+  response.status(201).json({ item: category });
+});
+
+categoriesRouter.patch("/:id", requireAdmin, async (request, response) => {
+  const id = parseOrThrow(z.string().uuid(), request.params.id);
+  const input = parseOrThrow(categoryInputSchema.partial().refine((value) => Object.keys(value).length > 0), request.body);
+  const existing = await prisma.category.findFirst({
+    where: { id, isTestData: request.authUser?.id === TEST_ADMIN_ID },
+  });
+  if (!existing) throw new HttpError(404, "CATEGORY_NOT_FOUND", "Category not found.");
+  const category = await prisma.category.update({ where: { id }, data: input });
+  response.json({ item: category });
+});
+
+categoriesRouter.delete("/:id", requireAdmin, async (request, response) => {
+  const id = parseOrThrow(z.string().uuid(), request.params.id);
+  const existing = await prisma.category.findFirst({
+    where: { id, isTestData: request.authUser?.id === TEST_ADMIN_ID },
+  });
+  if (!existing) throw new HttpError(404, "CATEGORY_NOT_FOUND", "Category not found.");
+  await prisma.category.delete({ where: { id } });
+  response.status(204).end();
+});
+
+productsRouter.get("/", async (request, response) => {
+  const query = parseOrThrow(productListQuery, request.query);
+  const where: {
+    categoryId?: string;
+    isActive?: boolean;
+    isTestData?: boolean;
+    OR?: Array<{ name?: { contains: string; mode: "insensitive" }; sku?: { contains: string; mode: "insensitive" } }>;
+  } = {};
+  where.isTestData = request.authUser?.id === TEST_ADMIN_ID;
+  if (query.categoryId) where.categoryId = query.categoryId;
+  if (query.active) where.isActive = query.active === "true";
+  if (query.search) {
+    where.OR = [
+      { name: { contains: query.search, mode: "insensitive" } },
+      { sku: { contains: query.search, mode: "insensitive" } },
+    ];
+  }
+  const [items, total] = await prisma.$transaction([
+    prisma.product.findMany({
+      where,
+      include: { category: true },
+      orderBy: [{ name: "asc" }, { id: "asc" }],
+      skip: (query.page - 1) * query.limit,
+      take: query.limit,
+    }),
+    prisma.product.count({ where }),
+  ]);
+  response.json({
+    items: items.map(serializeProduct),
+    pagination: { page: query.page, limit: query.limit, total, totalPages: Math.ceil(total / query.limit) },
+  });
+});
+
+productsRouter.get("/:id", async (request, response) => {
+  const id = parseOrThrow(z.string().uuid(), request.params.id);
+  const item = await prisma.product.findFirst({
+    where: { id, isTestData: request.authUser?.id === TEST_ADMIN_ID },
+    include: { category: true },
+  });
+  if (!item) throw new HttpError(404, "PRODUCT_NOT_FOUND", "Product not found.");
+  response.json({ item: serializeProduct(item) });
+});
+
+productsRouter.post("/", requireAdmin, async (request, response) => {
+  const input = parseOrThrow(productInputSchema, request.body);
+  const isTestData = request.authUser?.id === TEST_ADMIN_ID;
+  const category = await prisma.category.findFirst({ where: { id: input.categoryId, isTestData } });
+  if (!category) throw new HttpError(400, "CATEGORY_UNAVAILABLE", "The selected category is not available.");
+  const item = await prisma.product.create({
+    data: {
+      ...input,
+      sku: input.sku.toUpperCase(),
+      isTestData,
+    },
+    include: { category: true },
+  });
+  response.status(201).json({ item: serializeProduct(item) });
+});
+
+productsRouter.patch("/:id", requireAdmin, async (request, response) => {
+  const id = parseOrThrow(z.string().uuid(), request.params.id);
+  const input = parseOrThrow(updateProductSchema, request.body);
+  const isTestData = request.authUser?.id === TEST_ADMIN_ID;
+  const current = await prisma.product.findFirst({ where: { id, isTestData } });
+  if (!current) throw new HttpError(404, "PRODUCT_NOT_FOUND", "Product not found.");
+  if (input.categoryId) {
+    const category = await prisma.category.findFirst({ where: { id: input.categoryId, isTestData } });
+    if (!category) throw new HttpError(400, "CATEGORY_UNAVAILABLE", "The selected category is not available.");
+    if (current.categoryId !== input.categoryId) {
+      const hasSales = await prisma.orderItem.count({ where: { productId: id } });
+      if (hasSales > 0) {
+        throw new HttpError(409, "CATEGORY_HAS_SALES", "A product with order history cannot be moved to another category.");
+      }
+    }
+  }
+  const item = await prisma.product.update({
+    where: { id },
+    data: { ...input, ...(input.sku ? { sku: input.sku.toUpperCase() } : {}) },
+    include: { category: true },
+  });
+  response.json({ item: serializeProduct(item) });
+});
+
+productsRouter.delete("/:id", requireAdmin, async (request, response) => {
+  const id = parseOrThrow(z.string().uuid(), request.params.id);
+  const existing = await prisma.product.findFirst({
+    where: { id, isTestData: request.authUser?.id === TEST_ADMIN_ID },
+  });
+  if (!existing) throw new HttpError(404, "PRODUCT_NOT_FOUND", "Product not found.");
+  await prisma.product.delete({ where: { id } });
+  response.status(204).end();
+});
