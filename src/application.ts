@@ -6,7 +6,7 @@ import { getEnv } from "./config/env.js";
 import { prisma } from "./db/prisma.js";
 import { errorResponse, HttpError } from "./http/errors.js";
 import { describeError, logEvent, normalizeRoute } from "./http/logger.js";
-import { assignRequestId } from "./http/request-context.js";
+import { assignRequestId, logRequests } from "./http/request-context.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { authRouter } from "./routes/auth.js";
 import { ordersRouter } from "./routes/orders.js";
@@ -24,6 +24,7 @@ export function createApp(app = express()) {
     ...env.CORS_ALLOWED_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean),
   ]);
   app.use(assignRequestId);
+  app.use(logRequests);
   app.use(helmetFn());
   app.use(cors({
     credentials: true,
