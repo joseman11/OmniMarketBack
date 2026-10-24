@@ -88,11 +88,11 @@ No guardar secretos en GitHub ni en este repositorio; configurarlos como variabl
 
 `npm test` ejecuta pruebas unitarias para cálculos, validación Zod, paginación, filtros y formato monetario. `npm run test:e2e` ejecuta tres flujos API contra PostgreSQL: acceso autenticado, creación de producto/pedido y movimiento Kanban con conflicto por versión obsoleta.
 
-El workflow ejecutable está en `.github/workflows/ci.yml`; corre en `push` a `main` y `dev` y en pull requests. Para que un fallo impida el despliegue: en GitHub, proteger `main` exigiendo el check `OmniMarket Backend CI / backend`; en Vercel, condicionar la promoción a producción a que pasen los checks de GitHub. Los E2E de navegador para rutas privadas, tabla, arrastre visual, Skeletons y Toasts pertenecen a la fase frontend.
+El workflow ejecutable está en `.github/workflows/ci.yml`; corre en `push` a `main` y `dev` y en pull requests. En Vercel, agrega `Backend CI Gate` en **Settings → Deployment Checks → GitHub Checks** para detener la promoción a producción si falla CI. Los E2E de navegador para rutas privadas, tabla, arrastre visual, Skeletons y Toasts pertenecen a la fase frontend.
 
 ## Vercel
 
-El backend se despliega como función serverless de Vercel con el preset de Express: `src/app.ts` importa `express` y exporta por defecto la app creada con `createApp` (`src/application.ts`). No hay `vercel.json`, así que todas las rutas del despliegue del backend, incluidas `/api/test/*`, llegan a esa función.
+El backend se despliega como función serverless de Vercel con el preset de Express: `src/app.ts` importa `express` y exporta por defecto la app creada con `createApp` (`src/application.ts`). `vercel.json` habilita Fluid Compute para reducir arranques en frío; el SLA debe volver a medirse en el despliegue publicado porque esa configuración no demuestra por sí sola un tiempo de respuesta.
 
 - **Frontend/proxy**: el evaluador debe poder llamar `/api/test/analytics`, `/api/test/reset-data` y `/api/test/kanban-status` en la URL entregada. Si esa URL es la del frontend Next.js, su reescritura hacia el backend debe incluir `/api/test/:path*` (además de `/api/auth/:path*` y el resto de `/api/*`) y reenviar las cabeceras `Authorization` y `Cookie`.
 - **Migraciones**: `vercel-build` ejecuta `prisma migrate deploy` en builds de producción. Para migraciones nuevas, aplicarlas manualmente antes de desplegar el código que las usa, con la URL directa (no la del pooler) si el proveedor ofrece ambas: `DATABASE_URL="<url directa de producción>" npx prisma migrate deploy`.

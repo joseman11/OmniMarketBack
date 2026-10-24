@@ -76,3 +76,20 @@ jobs:
 
       - name: Run backend E2E flows
         run: npm run test:e2e
+
+  ci-gate:
+    name: Backend CI Gate
+    if: always()
+    needs: backend
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require backend checks to pass
+        env:
+          BACKEND_RESULT: ${{ needs.backend.result }}
+        run: |
+          if [ "$BACKEND_RESULT" != "success" ]; then
+            echo "The required backend checks did not pass."
+            exit 1
+          fi
