@@ -90,6 +90,16 @@ No guardar secretos en GitHub ni en este repositorio; configurarlos como variabl
 
 El workflow ejecutable está en `.github/workflows/ci.yml`; corre en `push` a `main` y pull requests. En Railway se debe conectar este repositorio, seleccionar `main` y activar **Wait for CI**. Railway autodesplegará solo tras terminar correctamente el workflow. Los E2E de navegador para rutas privadas, tabla, arrastre visual, Skeletons y Toasts pertenecen a la fase frontend.
 
+## Vercel
+
+El backend se despliega como función serverless de Vercel con el preset de Express: `src/app.ts` importa `express` y exporta por defecto la app creada con `createApp` (`src/application.ts`). No hay `vercel.json`, así que todas las rutas del despliegue del backend, incluidas `/api/test/*`, llegan a esa función.
+
+- **Frontend/proxy**: el evaluador debe poder llamar `/api/test/analytics`, `/api/test/reset-data` y `/api/test/kanban-status` en la URL entregada. Si esa URL es la del frontend Next.js, su reescritura hacia el backend debe incluir `/api/test/:path*` (además de `/api/auth/:path*` y el resto de `/api/*`) y reenviar las cabeceras `Authorization` y `Cookie`.
+- **Migraciones**: `vercel-build` ejecuta `prisma migrate deploy` en builds de producción. Para migraciones nuevas, aplicarlas manualmente antes de desplegar el código que las usa, con la URL directa (no la del pooler) si el proveedor ofrece ambas: `DATABASE_URL="<url directa de producción>" npx prisma migrate deploy`.
+- **Seed**: Vercel no ejecuta el seed. Los fixtures de auditoría se crean con `POST /api/test/reset-data` (Bearer `TEST_API_TOKEN`, `ALLOW_TEST_DATA_RESET=true`) o con `npm run db:seed` manual contra la base.
+- **Logs**: cada petición escribe una línea JSON (`http.request.completed`, con `request_id`, ruta normalizada, estado y `duration_ms`); los 500 escriben `http.request.failed` en stderr con el error saneado. Ambos aparecen en los Runtime Logs de Vercel. La respuesta incluye `X-Request-Id` para cruzarla con los logs.
+- **Idempotencia**: `POST /api/orders` acepta la cabecera opcional `Idempotency-Key` (1-255 caracteres ASCII visibles). La misma clave con el mismo contenido devuelve la respuesta original (`Idempotent-Replayed: true`); con otro contenido, `409 IDEMPOTENCY_KEY_REUSED`.
+
 ## Railway
 
 `.railway/railway.ts` declara el backend, PostgreSQL, migración y fixtures de auditoría pre-deploy, variables privadas preservadas y `/api/health`. La configuración no ha sido aplicada a una cuenta de Railway. Para un proyecto nuevo, crear/aplicar el proyecto desde el CLI de Railway, conectar el repositorio GitHub del backend al servicio y completar las variables privadas y el dominio público. El archivo se omite intencionalmente del source de GitHub porque el propietario y repositorio remoto aún no están configurados en este checkout.
