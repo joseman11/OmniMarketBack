@@ -46,25 +46,37 @@ function mockAnalyticsData(): void {
   prismaMock.salesDailyMetric.count.mockResolvedValue(1);
   prismaMock.order.aggregate.mockResolvedValue({
     _count: { _all: 3 },
-    _sum: { total: decimal("5360.00"), margin: decimal("1825.00") },
+    _sum: { total: decimal("5360.00"), margin: decimal("1625.00") },
   });
 }
 
 describe("audit endpoint contract", () => {
   it("serves paginated analytics anonymously from the synthetic dataset", async () => {
-    mockAnalyticsData();
     const response = await server.request("GET", "/api/test/analytics?page=1&limit=50");
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
-      summary: { ordersCount: 3, revenue: "5360.00", avgTicket: "1786.67", grossMargin: "1825.00" },
-      items: [{ day: "2026-10-20", ordersCount: 2, revenue: "360.00", avgTicket: "180.00", grossMargin: "225.00" }],
-      pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+      summary: { ordersCount: 3, revenue: "5360.00", avgTicket: "1786.67", grossMargin: "1625.00" },
+      items: [
+        { day: "2026-10-21", ordersCount: 1, revenue: "2500.00", avgTicket: "2500.00", grossMargin: "700.00" },
+        { day: "2026-10-20", ordersCount: 2, revenue: "360.00", avgTicket: "180.00", grossMargin: "225.00" },
+        { day: "2026-10-20", ordersCount: 1, revenue: "2500.00", avgTicket: "2500.00", grossMargin: "700.00" },
+      ],
+      pagination: { page: 1, limit: 50, total: 3, totalPages: 1 },
     });
-    expect(prismaMock.salesDailyMetric.findMany.mock.calls[0]?.[0]).toMatchObject({
-      where: { ownerId: TEST_ADMIN_ID },
-      skip: 0,
-      take: 50,
-    });
+    expect(response.headers.get("vercel-cdn-cache-control")).toBe("public, max-age=60");
+    expect(prismaMock.salesDailyMetric.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.salesDailyMetric.count).not.toHaveBeenCalled();
+    expect(prismaMock.order.aggregate).not.toHaveBeenCalled();
+  });
+
+  it("uses live analytics for filtered anonymous requests", async () => {
+    mockAnalyticsData();
+    const response = await server.request("GET", "/api/test/analytics?page=1&limit=50&from=2026-10-20");
+    expect(response.status).toBe(200);
+    expect(prismaMock.salesDailyMetric.findMany).toHaveBeenCalled();
+    expect(prismaMock.salesDailyMetric.count).toHaveBeenCalled();
+    expect(prismaMock.order.aggregate).toHaveBeenCalled();
+    expect(response.headers.get("vercel-cdn-cache-control")).toBeNull();
   });
 
   it("rejects an analytics page size above the maximum with 400", async () => {

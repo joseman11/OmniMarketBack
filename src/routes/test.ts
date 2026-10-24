@@ -5,6 +5,7 @@ import { HttpError } from "../http/errors.js";
 import { getEnv } from "../config/env.js";
 import { loadAnalytics } from "./analytics.js";
 import { resetTestData } from "../services/test-fixtures.js";
+import { isDefaultTestAnalyticsQuery, testAnalyticsSnapshot } from "../services/test-analytics-snapshot.js";
 import { loadKanbanStatus } from "./analytics.js";
 import { TEST_ADMIN_ID } from "../domain/workspace.js";
 
@@ -15,6 +16,11 @@ export const testRouter = Router();
 const auditOwnerId = (request: Request) => request.authUser?.id ?? TEST_ADMIN_ID;
 
 testRouter.get("/analytics", async (request, response) => {
+  if (!request.authUser && isDefaultTestAnalyticsQuery(request.query)) {
+    response.setHeader("Vercel-CDN-Cache-Control", "public, max-age=60");
+    response.json(testAnalyticsSnapshot);
+    return;
+  }
   response.json(await loadAnalytics(request.query, auditOwnerId(request)));
 });
 
