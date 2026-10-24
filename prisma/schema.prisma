@@ -43,6 +43,7 @@ model User {
   ownedProducts   Product[]
   ownedOrders     Order[]            @relation("OrderOwner")
   ownedMetrics    SalesDailyMetric[]
+  idempotencyKeys IdempotencyKey[]
 
   @@map("users")
 }
@@ -228,4 +229,22 @@ model SalesDailyMetric {
   @@index([categoryId])
   @@index([isTestData, day])
   @@map("sales_daily_metrics")
+}
+
+/// Stored outcome of a write sent with an Idempotency-Key header, saved in the same transaction as the write.
+model IdempotencyKey {
+  id             String   @id @default(uuid()) @db.Uuid
+  ownerId        String   @map("owner_id") @db.Uuid
+  operation      String
+  key            String
+  requestHash    String   @map("request_hash")
+  responseStatus Int      @map("response_status")
+  responseBody   Json     @map("response_body")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  owner User @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@unique([ownerId, operation, key])
+  @@index([createdAt])
+  @@map("idempotency_keys")
 }

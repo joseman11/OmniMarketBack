@@ -15,6 +15,7 @@ import {
 import { HttpError } from "../http/errors.js";
 import { parseOrThrow } from "../http/validation.js";
 import { refreshSalesMetrics } from "../services/analytics.js";
+import { commandHash, findIdempotentReplay, parseIdempotencyKey, saveIdempotentResponse } from "../services/idempotency.js";
 import { isTestWorkspace } from "../domain/workspace.js";
 import { serializeOrder } from "../domain/serializers.js";
 
@@ -94,7 +95,18 @@ ordersRouter.post("/", async (request, response) => {
   const creatorId = request.authUser!.id;
   const ownerId = creatorId;
   const isTestData = isTestWorkspace(ownerId);
-  const item = await prisma.$transaction(async (tx) => {
+  const idempotencyKey = parseIdempotencyKey(request.header("idempotency-key"));
+  const idempotency = idempotencyKey === undefined
+    ? undefined
+    : {
+        scope: { ownerId, operation: "orders.create", key: idempotencyKey },
+        hash: commandHash({ ...input, customer: { ...input.customer, email: input.customer.email.toLowerCase() } }),
+      };
+  const result = await prisma.$transaction(async (tx) => {
+    if (idempotency) {
+      const replay = await findIdempotentReplay(tx, idempotency.scope, idempotency.hash);
+      if (replay) return { ...replay, replayed: true };
+    }
     const pricedItems = await resolvePricedItems(tx, input.items, ownerId);
     const amounts = calculateOrderAmounts(pricedItems);
     const email = input.customer.email.toLowerCase();
@@ -143,9 +155,12 @@ ordersRouter.post("/", async (request, response) => {
       include: orderInclude,
     });
     await refreshSalesMetrics(tx, order.createdAt, ownerId);
-    return order;
+    const created = { status: 201, body: { item: serializeOrder(order) } };
+    if (!idempotency) return { ...created, replayed: false };
+    return { ...(await saveIdempotentResponse(tx, idempotency.scope, idempotency.hash, created)), replayed: false };
   });
-  response.status(201).json({ item: serializeOrder(item) });
+  if (result.replayed) response.setHeader("Idempotent-Replayed", "true");
+  response.status(result.status).json(result.body);
 });
 
 ordersRouter.patch("/bulk", async (request, response) => {

@@ -47,4 +47,20 @@ test.describe("data integrity against PostgreSQL", () => {
     const positions = await pendingPositions(request);
     expect(new Set(positions).size).toBe(positions.length);
   });
+
+  test("an Idempotency-Key replays the first order and rejects a different command", async ({ request }) => {
+    const headers = { "Idempotency-Key": `e2e-${Date.now()}` };
+    const first = await createOrder(request, "idem@example.test", headers);
+    expect(first.status()).toBe(201);
+    const replay = await createOrder(request, "IDEM@example.test", headers);
+    expect(replay.status()).toBe(201);
+    expect(replay.headers()["idempotent-replayed"]).toBe("true");
+    expect((await replay.json()).item.id).toBe((await first.json()).item.id);
+
+    const conflict = await createOrder(request, "otro@example.test", headers);
+    expect(conflict.status()).toBe(409);
+
+    const orders = await request.get("/api/orders?search=idem%40example.test");
+    expect((await orders.json()).pagination.total).toBe(1);
+  });
 });

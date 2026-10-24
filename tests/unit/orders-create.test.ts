@@ -78,3 +78,84 @@ describe("order creation position", () => {
     expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("optional Idempotency-Key on order creation", () => {
+  beforeEach(() => {
+    prismaMock.order.aggregate.mockResolvedValue({ _max: { position: null } });
+  });
+
+  it("keeps the current behaviour when the header is absent", async () => {
+    const response = await server.request("POST", "/api/orders", { headers: session, body: orderBody });
+    expect(response.status).toBe(201);
+    expect(response.headers.get("idempotent-replayed")).toBeNull();
+    expect(prismaMock.idempotencyKey.findUnique).not.toHaveBeenCalled();
+    expect(prismaMock.idempotencyKey.create).not.toHaveBeenCalled();
+  });
+
+  it("stores the response with the command hash in the same transaction as the order", async () => {
+    const response = await server.request("POST", "/api/orders", {
+      headers: { ...session, "Idempotency-Key": "checkout-123" },
+      body: orderBody,
+    });
+    expect(response.status).toBe(201);
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    const saved = prismaMock.idempotencyKey.create.mock.calls[0]?.[0] as { data: Record<string, unknown> };
+    expect(saved.data).toMatchObject({
+      ownerId: OWNER_ID,
+      operation: "orders.create",
+      key: "checkout-123",
+      responseStatus: 201,
+      requestHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(saved.data.responseBody).toEqual(response.body);
+  });
+
+  it("replays the stored result for the same key and the same content without creating another order", async () => {
+    const { commandHash } = await import("../../src/services/idempotency.js");
+    const storedBody = { item: { id: "o-original", position: 0 } };
+    prismaMock.idempotencyKey.findUnique.mockResolvedValue({
+      requestHash: commandHash({ ...orderBody, customer: { ...orderBody.customer, email: "ana@example.test" } }),
+      responseStatus: 201,
+      responseBody: storedBody,
+    });
+
+    const response = await server.request("POST", "/api/orders", {
+      headers: { ...session, "Idempotency-Key": "checkout-123" },
+      body: orderBody,
+    });
+
+    expect(response.status).toBe(201);
+    expect(response.body).toEqual(storedBody);
+    expect(response.headers.get("idempotent-replayed")).toBe("true");
+    expect(prismaMock.order.create).not.toHaveBeenCalled();
+    expect(prismaMock.idempotencyKey.findUnique.mock.calls[0]?.[0]).toEqual({
+      where: { ownerId_operation_key: { ownerId: OWNER_ID, operation: "orders.create", key: "checkout-123" } },
+    });
+  });
+
+  it("answers 409 when the same key arrives with different content", async () => {
+    prismaMock.idempotencyKey.findUnique.mockResolvedValue({ requestHash: "f".repeat(64), responseStatus: 201, responseBody: {} });
+    const response = await server.request("POST", "/api/orders", {
+      headers: { ...session, "Idempotency-Key": "checkout-123" },
+      body: orderBody,
+    });
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({ error: { code: "IDEMPOTENCY_KEY_REUSED" } });
+    expect(prismaMock.order.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed key with 400", async () => {
+    const response = await server.request("POST", "/api/orders", {
+      headers: { ...session, "Idempotency-Key": "k".repeat(256) },
+      body: orderBody,
+    });
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({ error: { code: "INVALID_IDEMPOTENCY_KEY" } });
+  });
+
+  it("hashes the normalized command independently of key order", async () => {
+    const { commandHash } = await import("../../src/services/idempotency.js");
+    expect(commandHash({ a: 1, b: { c: [1, 2], d: "x" } })).toBe(commandHash({ b: { d: "x", c: [1, 2] }, a: 1 }));
+    expect(commandHash({ items: [1, 2] })).not.toBe(commandHash({ items: [2, 1] }));
+  });
+});
