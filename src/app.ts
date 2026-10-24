@@ -1,6 +1,6 @@
 import cors from "cors";
-import express, { type ErrorRequestHandler } from "express";
-import * as helmetModule from "helmet";
+import express, { type ErrorRequestHandler, type RequestHandler } from "express";
+import helmet from "helmet";
 import { attachSessionUser, requireAuth } from "./auth/middleware.js";
 import { getEnv } from "./config/env.js";
 import { prisma } from "./db/prisma.js";
@@ -11,7 +11,7 @@ import { ordersRouter } from "./routes/orders.js";
 import { categoriesRouter, productsRouter } from "./routes/products.js";
 import { testRouter } from "./routes/test.js";
 
-const helmet = (helmetModule as any).default ?? helmetModule;
+const helmetFn: () => RequestHandler = ((helmet as unknown as { default?: () => RequestHandler })?.default ?? (helmet as unknown as () => RequestHandler));
 
 export function createApp() {
   const env = getEnv();
@@ -22,7 +22,7 @@ export function createApp() {
     env.WEB_ORIGIN,
     ...env.CORS_ALLOWED_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean),
   ]);
-  app.use(helmet());
+  app.use(helmetFn());
   app.use(cors({
     credentials: true,
     origin(origin, callback) {
