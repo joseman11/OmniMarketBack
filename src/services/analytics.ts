@@ -1,19 +1,25 @@
 import { Prisma } from "@prisma/client";
 import type { Prisma as PrismaTypes } from "@prisma/client";
+import { isTestWorkspace } from "../domain/workspace.js";
 
 type Transaction = PrismaTypes.TransactionClient;
 
-/** Rebuild one UTC day from order item snapshots so reporting stays consistent. */
-export async function refreshSalesMetrics(tx: Transaction, date: Date, isTestData = false): Promise<void> {
-  const day = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+/**
+ * Rebuild one UTC day of one workspace from order item snapshots so reporting stays consistent.
+ * Prisma stores `created_at` as a UTC `timestamp without time zone`, and the day is passed as a
+ * `YYYY-MM-DD` literal, so no cast here depends on the database session's TimeZone.
+ */
+export async function refreshSalesMetrics(tx: Transaction, date: Date, ownerId: string): Promise<void> {
+  const day = date.toISOString().slice(0, 10);
+  const isTestData = isTestWorkspace(ownerId);
   await tx.$executeRaw(Prisma.sql`
     DELETE FROM "sales_daily_metrics"
-    WHERE "day" = ${day}::date AND "is_test_data" = ${isTestData}
+    WHERE "day" = ${day}::date AND "owner_id" = ${ownerId}::uuid
   `);
   await tx.$executeRaw(Prisma.sql`
     WITH per_order_category AS (
       SELECT
-        (o."created_at" AT TIME ZONE 'UTC')::date AS "day",
+        ${day}::date AS "day",
         p."category_id",
         o."id" AS "order_id",
         SUM(oi."quantity" * oi."unit_price") AS "revenue",
@@ -21,15 +27,17 @@ export async function refreshSalesMetrics(tx: Transaction, date: Date, isTestDat
       FROM "orders" o
       JOIN "order_items" oi ON oi."order_id" = o."id"
       JOIN "products" p ON p."id" = oi."product_id"
-      WHERE (o."created_at" AT TIME ZONE 'UTC')::date = ${day}::date
-        AND o."is_test_data" = ${isTestData}
+      WHERE o."created_at" >= ${day}::date::timestamp
+        AND o."created_at" < (${day}::date + 1)::timestamp
+        AND o."owner_id" = ${ownerId}::uuid
         AND o."status" <> 'CANCELLED'
-      GROUP BY (o."created_at" AT TIME ZONE 'UTC')::date, p."category_id", o."id"
+      GROUP BY p."category_id", o."id"
     )
     INSERT INTO "sales_daily_metrics"
-      ("day", "category_id", "is_test_data", "orders_count", "revenue", "avg_ticket", "gross_margin")
+      ("day", "owner_id", "category_id", "is_test_data", "orders_count", "revenue", "avg_ticket", "gross_margin")
     SELECT
       "day",
+      ${ownerId}::uuid,
       "category_id",
       ${isTestData},
       COUNT(*)::integer,

@@ -43,5 +43,9 @@ export function clearCookie(
   path = "/",
   sameSite?: "Lax" | "None",
 ): void {
-  appendCookie(response, name, "", { maxAgeSeconds: 0, path, sameSite });
+  appendCookie(response, name, "", {
+    maxAgeSeconds: 0,
+    path,
+    ...(sameSite === undefined ? {} : { sameSite }),
+  });
 }

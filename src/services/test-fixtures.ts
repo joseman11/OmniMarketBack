@@ -1,8 +1,9 @@
 import type { PrismaClient } from "@prisma/client";
 import { calculateOrderAmounts } from "../domain/money.js";
+import { TEST_ADMIN_ID } from "../domain/workspace.js";
 import { refreshSalesMetrics } from "./analytics.js";
 
-export const TEST_ADMIN_ID = "00000000-0000-4000-8000-000000000001";
+export { TEST_ADMIN_ID };
 export const TEST_CATEGORY_HOME_ID = "00000000-0000-4000-8000-000000000010";
 export const TEST_CATEGORY_TECH_ID = "00000000-0000-4000-8000-000000000011";
 export const TEST_PRODUCT_MUG_ID = "00000000-0000-4000-8000-000000000020";
@@ -12,14 +13,14 @@ export const TEST_ORDER_PROCESSING_ID = "00000000-0000-4000-8000-000000000031";
 export const TEST_ORDER_SHIPPED_ID = "00000000-0000-4000-8000-000000000032";
 
 const customerRows = [
-  { id: "00000000-0000-4000-8000-000000000040", name: "Ana Torres", email: "ana@example.test", city: "Monterrey", isTestData: true },
-  { id: "00000000-0000-4000-8000-000000000041", name: "Luis Ríos", email: "luis@example.test", city: "Guadalajara", isTestData: true },
-  { id: "00000000-0000-4000-8000-000000000042", name: "María Solís", email: "maria@example.test", city: "Mérida", isTestData: true },
+  { id: "00000000-0000-4000-8000-000000000040", ownerId: TEST_ADMIN_ID, name: "Ana Torres", email: "ana@example.test", city: "Monterrey", isTestData: true },
+  { id: "00000000-0000-4000-8000-000000000041", ownerId: TEST_ADMIN_ID, name: "Luis Ríos", email: "luis@example.test", city: "Guadalajara", isTestData: true },
+  { id: "00000000-0000-4000-8000-000000000042", ownerId: TEST_ADMIN_ID, name: "María Solís", email: "maria@example.test", city: "Mérida", isTestData: true },
 ];
 
 const productRows = [
-  { id: TEST_PRODUCT_MUG_ID, categoryId: TEST_CATEGORY_HOME_ID, sku: "OM-TEST-MUG", name: "Taza Omni", price: "120.00", cost: "45.00", stock: 40, isTestData: true },
-  { id: TEST_PRODUCT_TABLET_ID, categoryId: TEST_CATEGORY_TECH_ID, sku: "OM-TEST-TAB", name: "Tablet Omni", price: "2500.00", cost: "1800.00", stock: 12, isTestData: true },
+  { id: TEST_PRODUCT_MUG_ID, ownerId: TEST_ADMIN_ID, categoryId: TEST_CATEGORY_HOME_ID, sku: "OM-TEST-MUG", name: "Taza Omni", price: "120.00", cost: "45.00", stock: 40, isTestData: true },
+  { id: TEST_PRODUCT_TABLET_ID, ownerId: TEST_ADMIN_ID, categoryId: TEST_CATEGORY_TECH_ID, sku: "OM-TEST-TAB", name: "Tablet Omni", price: "2500.00", cost: "1800.00", stock: 12, isTestData: true },
 ];
 
 const orderRows = [
@@ -62,7 +63,7 @@ export async function resetTestData(database: PrismaClient): Promise<{ categorie
       select: { createdAt: true },
     });
     await tx.order.deleteMany({ where: { isTestData: true } });
-    for (const order of oldTestOrders) await refreshSalesMetrics(tx, order.createdAt, true);
+    for (const order of oldTestOrders) await refreshSalesMetrics(tx, order.createdAt, TEST_ADMIN_ID);
     await tx.session.deleteMany({ where: { userId: TEST_ADMIN_ID } });
     await tx.account.deleteMany({ where: { userId: TEST_ADMIN_ID } });
     await tx.product.deleteMany({ where: { isTestData: true, items: { none: {} } } });
@@ -89,8 +90,8 @@ export async function resetTestData(database: PrismaClient): Promise<{ categorie
 
     await tx.category.createMany({
       data: [
-        { id: TEST_CATEGORY_HOME_ID, name: "OM-TEST Hogar", slug: "om-test-hogar", isTestData: true },
-        { id: TEST_CATEGORY_TECH_ID, name: "OM-TEST Tecnología", slug: "om-test-tecnologia", isTestData: true },
+        { id: TEST_CATEGORY_HOME_ID, ownerId: TEST_ADMIN_ID, name: "OM-TEST Hogar", slug: "om-test-hogar", isTestData: true },
+        { id: TEST_CATEGORY_TECH_ID, ownerId: TEST_ADMIN_ID, name: "OM-TEST Tecnología", slug: "om-test-tecnologia", isTestData: true },
       ],
       skipDuplicates: true,
     });
@@ -104,6 +105,7 @@ export async function resetTestData(database: PrismaClient): Promise<{ categorie
         data: {
           id: order.id,
           orderNumber: order.orderNumber,
+          ownerId: TEST_ADMIN_ID,
           customerId: order.customerId,
           createdBy: TEST_ADMIN_ID,
           status: order.status,
@@ -126,7 +128,7 @@ export async function resetTestData(database: PrismaClient): Promise<{ categorie
       const dayKey = order.createdAt.toISOString().slice(0, 10);
       metricDays.set(dayKey, order.createdAt);
     }
-    for (const date of metricDays.values()) await refreshSalesMetrics(tx, date, true);
+    for (const date of metricDays.values()) await refreshSalesMetrics(tx, date, TEST_ADMIN_ID);
 
     return { categories: 2, products: productRows.length, orders: orderRows.length };
   }, { maxWait: 10_000, timeout: 30_000 });

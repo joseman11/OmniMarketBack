@@ -23,7 +23,20 @@ type Identity = {
 const callbackPath = (provider: Provider) => `/api/auth/${provider}/callback`;
 const stateCookie = (provider: Provider) => `omni_${provider}_oauth_state`;
 const verifierCookie = (provider: Provider) => `omni_${provider}_oauth_verifier`;
+const returnToCookie = (provider: Provider) => `omni_${provider}_oauth_return_to`;
 const stateLifetime = 10 * 60;
+
+function safeReturnPath(value: unknown): string {
+  if (typeof value !== "string") return "/dashboard";
+  try {
+    const origin = new URL(getEnv().WEB_ORIGIN).origin;
+    const target = new URL(value, origin);
+    if (target.origin !== origin) return "/dashboard";
+    return `${target.pathname}${target.search}${target.hash}`;
+  } catch {
+    return "/dashboard";
+  }
+}
 
 function providerCredentials(provider: Provider): { id: string; secret: string } {
   const env = getEnv();
@@ -46,11 +59,14 @@ function createChallenge(verifier: string): string {
   return createHash("sha256").update(verifier).digest("base64url");
 }
 
-function startOAuth(provider: Provider, response: Response): void {
+async function startOAuth(provider: Provider, request: Request, response: Response): Promise<void> {
   const credentials = providerCredentials(provider);
   if (!credentials.id || !credentials.secret) {
     throw new HttpError(503, "OAUTH_NOT_CONFIGURED", `${provider} sign-in is not configured.`);
   }
+
+  // Starting a sign-in always ends the current session: access is granted only after the provider verifies again.
+  await deleteSession(readCookie(request, SESSION_COOKIE), response);
 
   const state = createVerifier();
   const verifier = createVerifier();
@@ -60,6 +76,11 @@ function startOAuth(provider: Provider, response: Response): void {
     sameSite: "Lax",
   });
   appendCookie(response, verifierCookie(provider), verifier, {
+    maxAgeSeconds: stateLifetime,
+    path: callbackPath(provider),
+    sameSite: "Lax",
+  });
+  appendCookie(response, returnToCookie(provider), safeReturnPath(request.query.returnTo), {
     maxAgeSeconds: stateLifetime,
     path: callbackPath(provider),
     sameSite: "Lax",
@@ -80,6 +101,9 @@ function startOAuth(provider: Provider, response: Response): void {
     "scope",
     provider === "google" ? "openid email profile" : "read:user user:email",
   );
+  // Never let the provider sign in silently: Google always shows the account chooser and the consent screen;
+  // GitHub always shows its account picker (it offers no stronger re-prompt for an app already authorized).
+  authorizeUrl.searchParams.set("prompt", provider === "google" ? "select_account consent" : "select_account");
   if (provider === "google") authorizeUrl.searchParams.set("access_type", "online");
   response.redirect(302, authorizeUrl.toString());
 }
@@ -96,6 +120,7 @@ async function exchangeCode(provider: Provider, code: string, verifier: string):
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: new URLSearchParams({
+      grant_type: "authorization_code",
       client_id: credentials.id,
       client_secret: credentials.secret,
       code,
@@ -240,8 +265,10 @@ async function findOrCreateUser(identity: Identity) {
 async function finishOAuth(provider: Provider, request: Request, response: Response): Promise<void> {
   const state = readCookie(request, stateCookie(provider));
   const verifier = readCookie(request, verifierCookie(provider));
+  const returnTo = readCookie(request, returnToCookie(provider));
   clearCookie(response, stateCookie(provider), callbackPath(provider), "Lax");
   clearCookie(response, verifierCookie(provider), callbackPath(provider), "Lax");
+  clearCookie(response, returnToCookie(provider), callbackPath(provider), "Lax");
 
   const queryState = request.query.state;
   const code = request.query.code;
@@ -256,11 +283,11 @@ async function finishOAuth(provider: Provider, request: Request, response: Respo
   const identity = await fetchIdentity(provider, accessToken);
   const user = await findOrCreateUser(identity);
   await createSession(user.id, response);
-  response.redirect(302, getEnv().WEB_ORIGIN);
+  response.redirect(302, new URL(safeReturnPath(returnTo), getEnv().WEB_ORIGIN).toString());
 }
 
-authRouter.get("/google", (_request, response) => startOAuth("google", response));
-authRouter.get("/github", (_request, response) => startOAuth("github", response));
+authRouter.get("/google", (request, response) => startOAuth("google", request, response));
+authRouter.get("/github", (request, response) => startOAuth("github", request, response));
 authRouter.get("/google/callback", async (request, response) => finishOAuth("google", request, response));
 authRouter.get("/github/callback", async (request, response) => finishOAuth("github", request, response));
 
