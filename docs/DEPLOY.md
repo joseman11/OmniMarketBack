@@ -4,7 +4,7 @@ Producción se despliega **solo** desde `.github/workflows/ci.yml`, y solo si pa
 
 ```
 push a main ─┬─ quality (lint · typecheck · unit · build) ─┬─ Backend CI Gate
-             └─ e2e (Playwright + PostgreSQL) ─────────────┴─ deploy (vercel pull → build --prod → deploy --prebuilt --prod) ─ smoke
+             └─ e2e (Playwright + PostgreSQL) ─────────────┴─ deploy (Vercel remote build + production) ─ smoke
 ```
 
 - `deploy` corre únicamente en `push` a `main` y necesita `ci-gate`. Si falla `quality` o `e2e`, `Backend CI Gate` falla y `deploy` queda omitido; en pull requests y en `dev` no se ejecuta.
@@ -32,7 +32,7 @@ El workflow valida los tres secretos antes de llamar a Vercel y muestra cuál fa
 
 ## 2. Despliegue automático desde Git (Vercel)
 
-`vercel.json` contiene `git.deploymentEnabled.main=false`, que desactiva los despliegues automáticos disparados por commits de `main`. La Action sigue desplegando con `vercel deploy --prebuilt --prod` después de pasar el gate. Confirma que Vercel procese esta configuración; también puede desactivarse desde Project → **Settings → Git**.
+`vercel.json` contiene `git.deploymentEnabled.main=false`, que desactiva los despliegues automáticos disparados por commits de `main`. Después de pasar el gate, la Action llama a `vercel deploy --prod`; Vercel construye el proyecto en su infraestructura con las variables Secret de Production. Confirma que Vercel procese esta configuración; también puede desactivarse desde Project → **Settings → Git**.
 
 ## 3. Proteger `main` con checks obligatorios (GitHub)
 
@@ -49,7 +49,7 @@ Si ya configuraste `Backend CI Gate` en Vercel (**Settings → Deployment Checks
 
 ## 4. Particularidades del backend
 
-- **Migraciones**: `vercel build --prod` ejecuta el script `vercel-build`, que corre `prisma migrate deploy` con el `DATABASE_URL` de producción descargado por `vercel pull`. Ahora eso ocurre en el runner de GitHub y antes del deploy. Si `DATABASE_URL` es la URL del pooler y el proveedor exige la directa para migrar, aplicarlas a mano antes del merge: `DATABASE_URL="<url directa>" npx prisma migrate deploy`. Pendiente actualmente: `20261025100000_user_onboarded_at` (aditiva, columna nullable).
+- **Migraciones**: el build remoto de Production ejecuta el script `vercel-build`, que corre `prisma migrate deploy` usando `DATABASE_URL` de Production. Las variables Secret de la integración Prisma no deben descargarse al runner con `vercel pull`; la integración proporciona una URL directa apta para migraciones. Pendiente actualmente: `20261025100000_user_onboarded_at` (aditiva, columna nullable).
 - **Fixtures del smoke**: `kanban-status?orderNumber=OM-TEST-1001` responde 404 si producción no tiene los fixtures de auditoría. Crearlos una vez con `POST /api/test/reset-data` (Bearer `TEST_API_TOKEN`, `ALLOW_TEST_DATA_RESET=true`).
 - **Región**: `vercel.json` fija `regions: ["iad1"]`; debe coincidir con la región de la base de datos (ver README, sección Vercel).
 - **Orden con el frontend**: si un cambio toca el contrato, desplegar primero el backend.
