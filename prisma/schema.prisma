@@ -31,6 +31,8 @@ model User {
   image         String?
   role          Role      @default(OPERATOR)
   createdAt     DateTime  @default(now()) @map("created_at")
+  // Set once, in the same transaction that offers the starter workspace; never cleared.
+  onboardedAt   DateTime? @map("onboarded_at")
 
   accounts Account[]
   sessions Session[]

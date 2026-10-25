@@ -13,6 +13,7 @@ import { authRouter } from "./routes/auth.js";
 import { ordersRouter } from "./routes/orders.js";
 import { categoriesRouter, productsRouter } from "./routes/products.js";
 import { testRouter } from "./routes/test.js";
+import { ensureStarterWorkspace } from "./services/onboarding.js";
 
 const helmetFn: () => RequestHandler = ((helmet as unknown as { default?: () => RequestHandler })?.default ?? (helmet as unknown as () => RequestHandler));
 
@@ -45,10 +46,12 @@ export function createApp(app = express()) {
   // Per-instance limits (see RATE_LIMITS); each app gets its own counters.
   const writes = createRateLimiter(RATE_LIMITS.writes);
   app.use("/api/auth", authRouter);
-  app.use("/api/analytics", createRateLimiter(RATE_LIMITS.analytics), requireAuth, analyticsRouter);
-  app.use("/api/categories", writes, requireAuth, categoriesRouter);
-  app.use("/api/products", writes, requireAuth, productsRouter);
-  app.use("/api/orders", writes, requireAuth, ordersRouter);
+  // Authenticated reads of the catalog, orders/Kanban and analytics give a brand-new account its starter data.
+  const starter = ensureStarterWorkspace;
+  app.use("/api/analytics", createRateLimiter(RATE_LIMITS.analytics), requireAuth, starter, analyticsRouter);
+  app.use("/api/categories", writes, requireAuth, starter, categoriesRouter);
+  app.use("/api/products", writes, requireAuth, starter, productsRouter);
+  app.use("/api/orders", writes, requireAuth, starter, ordersRouter);
   app.use("/api/test/reset-data", createRateLimiter(RATE_LIMITS.auditReset));
   app.use("/api/test", createRateLimiter(RATE_LIMITS.audit), testRouter);
 

@@ -29,6 +29,7 @@ export async function attachSessionUser(
     image: session.user.image,
     role: session.user.role,
   };
+  request.needsStarterData = session.user.onboardedAt === null;
   next();
 }
 

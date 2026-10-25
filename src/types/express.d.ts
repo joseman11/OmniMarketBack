@@ -10,6 +10,8 @@ declare global {
         image: string | null;
         role: Role;
       };
+      /** True while the signed-in account has not received its starter workspace (users.onboarded_at is NULL). */
+      needsStarterData?: boolean;
     }
   }
 }
