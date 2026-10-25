@@ -128,11 +128,11 @@ jobs:
             exit 1
           fi
 
-  # Production deploys only from CI, after both gates pass. Requires Git auto-deploys of production to be
-  # disabled in Vercel (see docs/DEPLOY.md); otherwise Vercel would still deploy main on its own.
+  # Production deploys only from CI after Backend CI Gate confirms quality and E2E passed.
+  # vercel.json disables automatic Git deployments of main to avoid a parallel production path.
   deploy:
     name: Deploy to Vercel (production)
-    needs: [quality, e2e]
+    needs: [ci-gate]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency:
@@ -141,6 +141,7 @@ jobs:
     env:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
     outputs:
       url: ${{ steps.deploy.outputs.url }}
     steps:
@@ -153,20 +154,31 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Validate Vercel secrets
+        run: |
+          missing=0
+          for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing GitHub Actions secret ${name}. Configure it in Settings > Secrets and variables > Actions."
+              missing=1
+            fi
+          done
+          exit "$missing"
+
       - name: Install Vercel CLI
         run: npm install --global "vercel@${VERCEL_CLI_VERSION}"
 
       - name: Pull production settings and environment
-        run: vercel pull --yes --environment=production --token="${{ secrets.VERCEL_TOKEN }}"
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
 
       # Runs the project's vercel-build script, which applies pending Prisma migrations for production builds.
       - name: Build
-        run: vercel build --prod --token="${{ secrets.VERCEL_TOKEN }}"
+        run: vercel build --prod --token="$VERCEL_TOKEN"
 
       - name: Deploy prebuilt output
         id: deploy
         run: |
-          url="$(vercel deploy --prebuilt --prod --token="${{ secrets.VERCEL_TOKEN }}")"
+          url="$(vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")"
           echo "url=${url}" >> "$GITHUB_OUTPUT"
           echo "Deployed ${url}" >> "$GITHUB_STEP_SUMMARY"
 
