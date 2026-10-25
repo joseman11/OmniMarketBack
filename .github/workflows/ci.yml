@@ -195,18 +195,28 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
-      # Stable public domain (repository variable). The per-deployment URL is the fallback, but Vercel
-      # Deployment Protection may answer 401 there.
-      PUBLIC_URL: ${{ vars.PRODUCTION_URL || needs.deploy.outputs.url }}
+      # Must be the stable production domain; generated deployment URLs may be protected.
+      PUBLIC_URL: ${{ vars.PRODUCTION_URL }}
     steps:
+      - name: Validate public production URL
+        run: |
+          if [ -z "$PUBLIC_URL" ]; then
+            echo "::error::Set the PRODUCTION_URL Actions variable to the stable public Backend domain in Vercel."
+            exit 1
+          fi
       - name: Audit endpoints answer 200
         run: |
           base="${PUBLIC_URL%/}"
           case "$base" in http*) ;; *) base="https://${base}" ;; esac
           failed=0
           for path in "/api/test/analytics?page=1&limit=50" "/api/test/kanban-status?orderNumber=OM-TEST-1001"; do
-            status="$(curl -sS -o /dev/null -w '%{http_code}' --retry 3 --retry-delay 5 --retry-all-errors --max-time 20 "${base}${path}" || true)"
+            result="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --retry 3 --retry-delay 5 --retry-all-errors --max-time 20 "${base}${path}" || true)"
+            status="${result%% *}"
+            redirect="${result#* }"
             echo "${path} -> ${status}"
+            if [ "$status" != "200" ] && [ -n "$redirect" ] && [ "$redirect" != "$result" ]; then
+              echo "Redirect target: ${redirect%%\?*}"
+            fi
             [ "$status" = "200" ] || failed=1
           done
           exit "$failed"

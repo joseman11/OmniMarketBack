@@ -28,7 +28,7 @@ Repositorio del backend → **Settings → Secrets and variables → Actions**.
 
 El workflow valida los tres secretos antes de llamar a Vercel y muestra cuál falta. `VERCEL_PROJECT_ID` debe apuntar al proyecto del backend; el proyecto del frontend usa su propio ID en los secretos de ese repositorio.
 
-Sin `PRODUCTION_URL`, el smoke usa la URL única del deployment; si **Deployment Protection** está activa, esa URL responde 401 y el smoke falla.
+`PRODUCTION_URL` es obligatoria para el smoke y debe ser el dominio público estable asignado al proyecto en Vercel (Project → Settings → Domains), no la URL única del deployment. Sin la variable, el smoke falla con un mensaje claro en vez de probar una URL posiblemente protegida. Con **Standard Protection**, las URLs únicas de deployment pueden requerir autenticación mientras el dominio de producción sigue público; si el dominio estable también redirige, revisa si el proyecto está en **All Deployments** o si la aplicación genera la redirección.
 
 ## 2. Despliegue automático desde Git (Vercel)
 
