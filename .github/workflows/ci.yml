@@ -177,10 +177,17 @@ jobs:
 
       - name: Deploy prebuilt output
         id: deploy
+        timeout-minutes: 10
         run: |
-          url="$(vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")"
+          url="$(vercel deploy --prebuilt --prod --no-wait --token="$VERCEL_TOKEN")"
           echo "url=${url}" >> "$GITHUB_OUTPUT"
           echo "Deployed ${url}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for deployment readiness
+        timeout-minutes: 12
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.url }}
+        run: vercel inspect "$DEPLOYMENT_URL" --wait --timeout=10m --token="$VERCEL_TOKEN"
 
   smoke:
     name: Smoke test (public URL)
