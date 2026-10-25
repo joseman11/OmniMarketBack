@@ -52,27 +52,25 @@ function mockAnalyticsData(): void {
 }
 
 describe("audit endpoint contract", () => {
-  it("serves paginated analytics anonymously from the synthetic dataset", async () => {
+  it("serves the exact audit query anonymously from the database, scoped to the synthetic dataset", async () => {
+    mockAnalyticsData();
     const response = await server.request("GET", "/api/test/analytics?page=1&limit=50");
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
       summary: { ordersCount: 3, revenue: "5360.00", avgTicket: "1786.67", grossMargin: "1625.00" },
-      items: [
-        { day: "2026-10-21", ordersCount: 1, revenue: "2500.00", avgTicket: "2500.00", grossMargin: "700.00" },
-        { day: "2026-10-20", ordersCount: 2, revenue: "360.00", avgTicket: "180.00", grossMargin: "225.00" },
-        { day: "2026-10-20", ordersCount: 1, revenue: "2500.00", avgTicket: "2500.00", grossMargin: "700.00" },
-      ],
-      pagination: { page: 1, limit: 50, total: 3, totalPages: 1 },
+      items: [{ day: "2026-10-20", ordersCount: 2, revenue: "360.00", avgTicket: "180.00", grossMargin: "225.00" }],
+      pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
     });
-    expect(response.headers.get("vercel-cdn-cache-control")).toBe("public, max-age=60");
-    expect(prismaMock.$queryRaw).not.toHaveBeenCalled();
+    // One PostgreSQL round trip, never a stored snapshot.
+    expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prismaMock.$queryRaw.mock.calls[0]?.[0].values).toContain(TEST_ADMIN_ID);
   });
 
-  it("uses live analytics for filtered anonymous requests", async () => {
+  it("lets the CDN cache only the anonymous synthetic dataset", async () => {
     mockAnalyticsData();
-    const response = await server.request("GET", "/api/test/analytics?page=1&limit=50&from=2026-10-20");
-    expect(response.status).toBe(200);
-    expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(1);
+    const response = await server.request("GET", "/api/test/analytics?page=1&limit=50");
+    expect(response.headers.get("cache-control")).toBe("public, s-maxage=30, stale-while-revalidate=300");
+    expect(response.headers.get("vary")).toContain("Cookie");
     expect(response.headers.get("vercel-cdn-cache-control")).toBeNull();
   });
 
@@ -194,7 +192,10 @@ describe("audit endpoint contract", () => {
     prismaMock.order.findFirst.mockResolvedValue({ id: "o1", orderNumber: "OM-1", status: "SHIPPED", position: 0, version: 2, updatedAt: new Date() });
     const cookie = { Cookie: "omni_session=evaluator-token" };
 
-    expect((await server.request("GET", "/api/test/analytics", { headers: cookie })).status).toBe(200);
+    const analytics = await server.request("GET", "/api/test/analytics", { headers: cookie });
+    expect(analytics.status).toBe(200);
+    // A session's own data is never cached by a shared cache.
+    expect(analytics.headers.get("cache-control")).toBe("private, no-store");
     expect((await server.request("GET", "/api/test/kanban-status?orderNumber=OM-1", { headers: cookie })).status).toBe(200);
     expect(prismaMock.$queryRaw.mock.calls[0]?.[0].values).toContain(userId);
     expect(prismaMock.order.findFirst.mock.calls[0]?.[0]).toMatchObject({ where: { orderNumber: "OM-1", ownerId: userId } });

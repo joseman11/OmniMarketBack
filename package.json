@@ -19,7 +19,8 @@
     "test:e2e": "playwright test",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "measure:latency": "tsx scripts/measure-latency.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",

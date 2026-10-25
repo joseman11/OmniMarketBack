@@ -5,7 +5,6 @@ import { HttpError } from "../http/errors.js";
 import { getEnv } from "../config/env.js";
 import { loadAnalytics } from "./analytics.js";
 import { resetTestData } from "../services/test-fixtures.js";
-import { isDefaultTestAnalyticsQuery, testAnalyticsSnapshot } from "../services/test-analytics-snapshot.js";
 import { loadKanbanStatus } from "./analytics.js";
 import { TEST_ADMIN_ID } from "../domain/workspace.js";
 
@@ -15,13 +14,18 @@ export const testRouter = Router();
 // its own workspace. The owner always comes from the session, never from a request parameter.
 const auditOwnerId = (request: Request) => request.authUser?.id ?? TEST_ADMIN_ID;
 
+/**
+ * Every request is answered from PostgreSQL. Only the anonymous synthetic dataset may then be cached by the CDN;
+ * a response for a session is that account's data. `Vary: Cookie` keeps a shared cache from answering a signed-in
+ * request with the anonymous copy.
+ */
+export const ANONYMOUS_AUDIT_CACHE = "public, s-maxage=30, stale-while-revalidate=300";
+
 testRouter.get("/analytics", async (request, response) => {
-  if (!request.authUser && isDefaultTestAnalyticsQuery(request.query)) {
-    response.setHeader("Vercel-CDN-Cache-Control", "public, max-age=60");
-    response.json(testAnalyticsSnapshot);
-    return;
-  }
-  response.json(await loadAnalytics(request.query, auditOwnerId(request)));
+  const body = await loadAnalytics(request.query, auditOwnerId(request));
+  response.vary("Cookie");
+  response.setHeader("Cache-Control", request.authUser ? "private, no-store" : ANONYMOUS_AUDIT_CACHE);
+  response.json(body);
 });
 
 testRouter.get("/kanban-status", async (request, response) => {

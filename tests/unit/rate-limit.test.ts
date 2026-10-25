@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NextFunction, Request, Response } from "express";
-import { decimal, prismaMock, resetPrismaMock } from "./helpers/prisma-mock.js";
+import { prismaMock, resetPrismaMock } from "./helpers/prisma-mock.js";
 import { startServer, type TestServer } from "./helpers/http.js";
 
 vi.mock("../../src/db/prisma.js", async () => ({ prisma: (await import("./helpers/prisma-mock.js")).prismaMock }));
@@ -67,8 +67,7 @@ describe("rate limits in the application", () => {
   afterAll(async () => server.close());
 
   it("serves a burst of audit reads without throttling and returns the public 429 format past the limit", async () => {
-    prismaMock.salesDailyMetric.findMany.mockResolvedValue([]);
-    prismaMock.order.aggregate.mockResolvedValue({ _count: { _all: 0 }, _sum: { total: decimal("0.00"), margin: decimal("0.00") } });
+    prismaMock.$queryRaw.mockResolvedValue([{ total: 0, items: [], ordersCount: 0, revenue: "0.00", grossMargin: "0.00" }]);
     const first = await server.request("GET", "/api/test/analytics");
     expect(first.status).toBe(200);
     expect(first.headers.get("ratelimit-limit")).toBe(String(RATE_LIMITS.audit.max));
