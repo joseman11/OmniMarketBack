@@ -90,7 +90,7 @@ No guardar secretos en GitHub ni en este repositorio; configurarlos como variabl
 
 `npm test` ejecuta pruebas unitarias para cálculos, validación Zod, paginación, filtros y formato monetario. `npm run test:e2e` ejecuta tres flujos API contra PostgreSQL: acceso autenticado, creación de producto/pedido y movimiento Kanban con conflicto por versión obsoleta.
 
-El workflow ejecutable está en `.github/workflows/ci.yml`; corre en `push` a `main` y `dev` y en pull requests. En Vercel, agrega `Backend CI Gate` en **Settings → Deployment Checks → GitHub Checks** para detener la promoción a producción si falla CI. Los E2E de navegador para rutas privadas, tabla, arrastre visual, Skeletons y Toasts pertenecen a la fase frontend.
+El workflow ejecutable está en `.github/workflows/ci.yml`; corre en `push` a `main` y `dev` y en pull requests. Tiene los jobs `quality` (lint, typecheck, unit, build) y `e2e` (Playwright sobre PostgreSQL), y `Backend CI Gate`, que solo pasa si ambos pasan y es el check que debe exigirse en GitHub y en Vercel (**Settings → Deployment Checks → GitHub Checks**). En `push` a `main`, `deploy` despliega a Vercel con la CLI solo si `quality` y `e2e` pasan, y `smoke` comprueba los endpoints de auditoría en la URL pública. Los secretos, el ajuste de Vercel que desactiva el despliegue automático de producción desde Git y la protección de `main` están en [`docs/DEPLOY.md`](docs/DEPLOY.md). Los E2E de navegador para rutas privadas, tabla, arrastre visual, Skeletons y Toasts pertenecen a la fase frontend.
 
 ## Vercel
 
