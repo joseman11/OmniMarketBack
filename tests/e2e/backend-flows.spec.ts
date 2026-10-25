@@ -32,15 +32,18 @@ test("authentication protects private API routes and supports an isolated test s
   const privateAfterLogin = await request.get("/api/orders");
   expect(privateAfterLogin.ok()).toBeTruthy();
 
-  const analytics = await request.get("/api/test/analytics?page=1&limit=50");
-  expect(analytics.ok()).toBeTruthy();
-  expect((await analytics.json()).summary.ordersCount).toBeGreaterThan(0);
-
-  const startedAt = performance.now();
-  const measuredAnalytics = await request.get("/api/test/analytics?page=1&limit=50");
-  const elapsedMs = performance.now() - startedAt;
-  expect(measuredAnalytics.ok()).toBeTruthy();
-  expect(elapsedMs).toBeLessThan(300);
+  for (const page of [1, 2]) {
+    for (let sample = 1; sample <= 3; sample += 1) {
+      const startedAt = performance.now();
+      const response = await request.get(`/api/test/analytics?page=${page}&limit=50`);
+      const body = await response.json();
+      const elapsedMs = Math.round((performance.now() - startedAt) * 10) / 10;
+      expect(response.ok(), `analytics page ${page} sample ${sample} returned HTTP ${response.status()}`).toBeTruthy();
+      expect(body.pagination).toMatchObject({ page, limit: 50 });
+      expect(body.summary.ordersCount).toBeGreaterThan(0);
+      expect(elapsedMs, `analytics page ${page} sample ${sample} took ${elapsedMs} ms`).toBeLessThan(300);
+    }
+  }
 });
 
 test.describe("authenticated backend workflows", () => {

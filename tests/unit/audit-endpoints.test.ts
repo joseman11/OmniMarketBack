@@ -66,12 +66,35 @@ describe("audit endpoint contract", () => {
     expect(prismaMock.$queryRaw.mock.calls[0]?.[0].values).toContain(TEST_ADMIN_ID);
   });
 
+  it("runs page two through PostgreSQL with the requested offset", async () => {
+    prismaMock.$queryRaw.mockResolvedValue([{
+      total: 1,
+      items: [],
+      ordersCount: 3,
+      revenue: "5360.00",
+      grossMargin: "1625.00",
+    }]);
+
+    const response = await server.request("GET", "/api/test/analytics?page=2&limit=50");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      summary: { ordersCount: 3, revenue: "5360.00", avgTicket: "1786.67", grossMargin: "1625.00" },
+      items: [],
+      pagination: { page: 2, limit: 50, total: 1, totalPages: 1 },
+    });
+    expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(1);
+    const query = prismaMock.$queryRaw.mock.calls[0]?.[0];
+    expect(sqlText(prismaMock.$queryRaw.mock.calls[0] ?? []).replace(/\s+/g, " ")).toContain("OFFSET ? LIMIT ?");
+    expect(query?.values[1]).toBe(50);
+  });
+
   it("lets the CDN cache only the anonymous synthetic dataset", async () => {
     mockAnalyticsData();
     const response = await server.request("GET", "/api/test/analytics?page=1&limit=50");
     expect(response.headers.get("cache-control")).toBe("public, s-maxage=30, stale-while-revalidate=300");
     expect(response.headers.get("vary")).toContain("Cookie");
-    expect(response.headers.get("vercel-cdn-cache-control")).toBeNull();
+    expect(response.headers.get("vercel-cdn-cache-control")).toBe("public, s-maxage=30, stale-while-revalidate=300");
   });
 
   it("rejects an analytics page size above the maximum with 400", async () => {
@@ -196,6 +219,7 @@ describe("audit endpoint contract", () => {
     expect(analytics.status).toBe(200);
     // A session's own data is never cached by a shared cache.
     expect(analytics.headers.get("cache-control")).toBe("private, no-store");
+    expect(analytics.headers.get("vercel-cdn-cache-control")).toBeNull();
     expect((await server.request("GET", "/api/test/kanban-status?orderNumber=OM-1", { headers: cookie })).status).toBe(200);
     expect(prismaMock.$queryRaw.mock.calls[0]?.[0].values).toContain(userId);
     expect(prismaMock.order.findFirst.mock.calls[0]?.[0]).toMatchObject({ where: { orderNumber: "OM-1", ownerId: userId } });

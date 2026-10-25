@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { PrismaClient } from "@prisma/client";
+import { hashSessionToken, SESSION_COOKIE } from "../../src/auth/session.js";
 import { ensureStarterData, STARTER_ORDER_PREFIX } from "../../src/services/onboarding.js";
 
 const token = process.env.TEST_API_TOKEN ?? "local-e2e-token-not-for-production";
@@ -20,9 +21,18 @@ async function workspaceCounts(ownerId: string) {
 
 test.describe("starter workspace against PostgreSQL", () => {
   let ownerId: string;
+  let sessionToken: string;
   test.beforeEach(async () => {
     ownerId = randomUUID();
+    sessionToken = randomUUID();
     await prisma.user.create({ data: { id: ownerId, email: `starter-${ownerId}@example.test` } });
+    await prisma.session.create({
+      data: {
+        userId: ownerId,
+        sessionToken: hashSessionToken(sessionToken),
+        expires: new Date(Date.now() + 60_000),
+      },
+    });
   });
   test.afterEach(async () => {
     const owned = { where: { ownerId } };
@@ -45,6 +55,18 @@ test.describe("starter workspace against PostgreSQL", () => {
     expect(orders.map((order) => order.history.length).sort()).toEqual([1, 2, 3]);
     expect((await workspaceCounts(ownerId)).metrics).toBeGreaterThan(0);
     expect((await prisma.user.findUniqueOrThrow({ where: { id: ownerId } })).onboardedAt).not.toBeNull();
+  });
+
+  test("the first authenticated product-list request returns the new account's active starter products", async ({ request }) => {
+    const response = await request.get("/api/products?active=true", {
+      headers: { Cookie: `${SESSION_COOKIE}=${sessionToken}` },
+    });
+
+    expect(response.status()).toBe(200);
+    const body = await response.json();
+    expect(body.items).toHaveLength(2);
+    expect(body.items.every((product: { isActive: boolean; categoryId: string }) => product.isActive && product.categoryId)).toBe(true);
+    expect(await workspaceCounts(ownerId)).toMatchObject({ categories: 2, products: 2, orders: 3 });
   });
 
   test("a second call does not duplicate, and an emptied workspace is not seeded again", async () => {

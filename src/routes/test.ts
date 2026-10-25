@@ -24,7 +24,12 @@ export const ANONYMOUS_AUDIT_CACHE = "public, s-maxage=30, stale-while-revalidat
 testRouter.get("/analytics", async (request, response) => {
   const body = await loadAnalytics(request.query, auditOwnerId(request));
   response.vary("Cookie");
-  response.setHeader("Cache-Control", request.authUser ? "private, no-store" : ANONYMOUS_AUDIT_CACHE);
+  if (request.authUser) {
+    response.setHeader("Cache-Control", "private, no-store");
+  } else {
+    response.setHeader("Cache-Control", ANONYMOUS_AUDIT_CACHE);
+    response.setHeader("Vercel-CDN-Cache-Control", ANONYMOUS_AUDIT_CACHE);
+  }
   response.json(body);
 });
 

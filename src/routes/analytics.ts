@@ -31,16 +31,23 @@ export async function loadAnalytics(input: unknown, ownerId: string) {
   const metricFrom = query.from ? Prisma.sql`AND m."day" >= ${query.from}::date` : Prisma.empty;
   const metricTo = query.to ? Prisma.sql`AND m."day" < (${query.to}::date + 1)` : Prisma.empty;
   const metricCategory = query.categoryId ? Prisma.sql`AND m."category_id" = ${query.categoryId}::uuid` : Prisma.empty;
+  const metricWhere = Prisma.sql`
+    WHERE m."owner_id" = ${ownerId}::uuid
+      ${metricFrom}
+      ${metricTo}
+      ${metricCategory}
+  `;
   const orderFrom = query.from ? Prisma.sql`AND o."created_at" >= ${query.from}::date::timestamp` : Prisma.empty;
   const orderTo = query.to ? Prisma.sql`AND o."created_at" < (${query.to}::date + 1)::timestamp` : Prisma.empty;
   const summaryQuery = query.categoryId
     ? Prisma.sql`
         summary AS (
           SELECT
-            COALESCE(SUM("ordersCount"), 0)::int AS "ordersCount",
-            COALESCE(SUM("revenue"), 0)::text AS "revenue",
-            COALESCE(SUM("grossMargin"), 0)::text AS "grossMargin"
-          FROM metric_rows
+            COALESCE(SUM(m."orders_count"), 0)::int AS "ordersCount",
+            COALESCE(SUM(m."revenue"), 0)::text AS "revenue",
+            COALESCE(SUM(m."gross_margin"), 0)::text AS "grossMargin"
+          FROM "sales_daily_metrics" m
+          ${metricWhere}
         )`
     : Prisma.sql`
         summary AS (
@@ -55,33 +62,38 @@ export async function loadAnalytics(input: unknown, ownerId: string) {
             ${orderTo}
         )`;
 
-  // Metrics, count, and summary share one PostgreSQL round trip. The unfiltered summary still aggregates whole
-  // orders (so a multi-category order is counted once); a category-filtered summary uses only that category's lines.
+  // Keep every result in one PostgreSQL round trip. Select the requested metric page before joining category labels,
+  // so PostgreSQL can use the owner/day/category ordering index without sorting or joining every result row.
+  // Count and category summary scan metrics independently. The unfiltered summary still aggregates whole orders
+  // (so a multi-category order is counted once).
   const [result] = await prisma.$queryRaw<AnalyticsSqlResult[]>(Prisma.sql`
-    WITH metric_rows AS MATERIALIZED (
+    WITH page_metrics AS (
       SELECT
         m."day",
         m."category_id" AS "categoryId",
         m."orders_count" AS "ordersCount",
         m."revenue",
         m."avg_ticket" AS "avgTicket",
-        m."gross_margin" AS "grossMargin",
-        c."name" AS "categoryName",
-        c."slug" AS "categorySlug"
+        m."gross_margin" AS "grossMargin"
       FROM "sales_daily_metrics" m
-      JOIN "categories" c ON c."id" = m."category_id"
-      WHERE m."owner_id" = ${ownerId}::uuid
-        ${metricFrom}
-        ${metricTo}
-        ${metricCategory}
-    ),
-    page_rows AS (
-      SELECT * FROM metric_rows
-      ORDER BY "day" DESC, "categoryId" ASC
+      ${metricWhere}
+      ORDER BY m."day" DESC, m."category_id" ASC
       OFFSET ${(query.page - 1) * query.limit}
       LIMIT ${query.limit}
     ),
-    row_count AS (SELECT COUNT(*)::int AS "total" FROM metric_rows),
+    page_rows AS (
+      SELECT
+        pm.*,
+        c."name" AS "categoryName",
+        c."slug" AS "categorySlug"
+      FROM page_metrics pm
+      JOIN "categories" c ON c."id" = pm."categoryId"
+    ),
+    row_count AS (
+      SELECT COUNT(*)::int AS "total"
+      FROM "sales_daily_metrics" m
+      ${metricWhere}
+    ),
     ${summaryQuery},
     page_items AS (
       SELECT COALESCE(
